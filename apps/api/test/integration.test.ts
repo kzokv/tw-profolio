@@ -161,6 +161,69 @@ describe("api integration", () => {
     expect(actions.json()).toEqual([]);
   });
 
+  it("keeps transaction fee snapshots immutable after profile edits", async () => {
+    const feeProfilesBefore = await app.inject({ method: "GET", url: "/fee-profiles" });
+    const profile = feeProfilesBefore.json()[0];
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/portfolio/transactions",
+      headers: { "idempotency-key": "k-snapshot-immutable" },
+      payload: {
+        accountId: "acc-1",
+        symbol: "2330",
+        quantity: 1,
+        priceNtd: 100,
+        tradeDate: "2026-01-01",
+        type: "BUY",
+        isDayTrade: false,
+      },
+    });
+    expect(createResponse.statusCode).toBe(200);
+
+    const patchResponse = await app.inject({
+      method: "PATCH",
+      url: `/fee-profiles/${profile.id}`,
+      payload: {
+        ...profile,
+        name: "Updated Broker Name",
+      },
+    });
+    expect(patchResponse.statusCode).toBe(200);
+
+    const transactions = await app.inject({ method: "GET", url: "/portfolio/transactions" });
+    expect(transactions.statusCode).toBe(200);
+    expect(transactions.json()[0].feeSnapshot.name).toBe(profile.name);
+  });
+
+  it("isolates seeded default fee profiles between memory users", async () => {
+    const userAProfiles = await app.inject({
+      method: "GET",
+      url: "/fee-profiles",
+      headers: { "x-user-id": "user-a" },
+    });
+    const userAProfile = userAProfiles.json()[0];
+
+    const patchA = await app.inject({
+      method: "PATCH",
+      url: `/fee-profiles/${userAProfile.id}`,
+      headers: { "x-user-id": "user-a" },
+      payload: {
+        ...userAProfile,
+        name: "User A Broker",
+      },
+    });
+    expect(patchA.statusCode).toBe(200);
+
+    const userBProfiles = await app.inject({
+      method: "GET",
+      url: "/fee-profiles",
+      headers: { "x-user-id": "user-b" },
+    });
+    expect(userBProfiles.statusCode).toBe(200);
+    expect(userBProfiles.json()[0].name).toBe("Default Broker");
+  });
+
   it("recompute updates realized pnl on sell transactions", async () => {
     await app.inject({
       method: "POST",

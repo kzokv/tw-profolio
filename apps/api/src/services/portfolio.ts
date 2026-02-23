@@ -61,7 +61,7 @@ export function createTransaction(
     commissionNtd: fees.commissionNtd,
     taxNtd: fees.taxNtd,
     isDayTrade: input.isDayTrade,
-    feeSnapshot: profile,
+    feeSnapshot: { ...profile },
   };
 
   applyToLots(store, tx, store.settings.costBasisMethod);

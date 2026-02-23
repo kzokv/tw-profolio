@@ -250,14 +250,6 @@ export class PostgresPersistence implements Persistence {
       );
 
       const feeProfileIds = store.feeProfiles.map((item) => item.id);
-      if (feeProfileIds.length) {
-        await client.query(
-          `DELETE FROM fee_profiles
-           WHERE user_id = $1
-             AND id <> ALL($2)`,
-          [store.userId, feeProfileIds],
-        );
-      }
 
       for (const profile of store.feeProfiles) {
         const upsertProfile = await client.query(
@@ -374,6 +366,17 @@ export class PostgresPersistence implements Persistence {
             tx.realizedPnlNtd ?? null,
           ],
         );
+      }
+
+      if (feeProfileIds.length) {
+        await client.query(
+          `DELETE FROM fee_profiles
+           WHERE user_id = $1
+             AND id <> ALL($2)`,
+          [store.userId, feeProfileIds],
+        );
+      } else {
+        await client.query(`DELETE FROM fee_profiles WHERE user_id = $1`, [store.userId]);
       }
 
       if (accountIds.length) {

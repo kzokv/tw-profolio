@@ -15,7 +15,13 @@ const defaultFeeProfile: FeeProfile = {
   bondEtfSellTaxRateBps: 0,
 };
 
+function createDefaultFeeProfile(): FeeProfile {
+  return { ...defaultFeeProfile };
+}
+
 export function createStore(): Store {
+  const seededFeeProfile = createDefaultFeeProfile();
+
   return {
     userId: "user-1",
     settings: {
@@ -29,10 +35,10 @@ export function createStore(): Store {
         id: "acc-1",
         name: "Main",
         userId: "user-1",
-        feeProfileId: defaultFeeProfile.id,
+        feeProfileId: seededFeeProfile.id,
       },
     ],
-    feeProfiles: [defaultFeeProfile],
+    feeProfiles: [seededFeeProfile],
     feeProfileBindings: [],
     transactions: [],
     lots: [],
