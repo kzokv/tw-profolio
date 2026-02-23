@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --bg: #f4efe6;
+  --surface: #fffdf8;
+  --surface-soft: #f8f1e4;
+  --text: #1f2430;
+  --muted: #696e79;
+  --accent: #c49538;
+  --line: #dfd4c1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: var(--font-body), "Noto Sans TC", sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 8% 10%, rgba(196, 149, 56, 0.2), transparent 34%),
+    radial-gradient(circle at 92% 15%, rgba(54, 103, 156, 0.14), transparent 30%),
+    linear-gradient(180deg, #f8f3eb 0%, #f4efe6 45%, #efe6d6 100%);
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display), "Noto Serif TC", serif;
+  letter-spacing: 0.01em;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .stagger > * {
+    opacity: 0;
+    animation: fadeInUp 420ms ease-out forwards;
+  }
+
+  .stagger > *:nth-child(1) { animation-delay: 40ms; }
+  .stagger > *:nth-child(2) { animation-delay: 80ms; }
+  .stagger > *:nth-child(3) { animation-delay: 120ms; }
+  .stagger > *:nth-child(4) { animation-delay: 160ms; }
+  .stagger > *:nth-child(5) { animation-delay: 200ms; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition-duration: 0ms !important;
+  }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
