@@ -103,6 +103,64 @@ describe("api integration", () => {
     expect(second.statusCode).toBe(200);
   });
 
+  it("does not consume idempotency key for domain validation failure", async () => {
+    const first = await app.inject({
+      method: "POST",
+      url: "/portfolio/transactions",
+      headers: { "idempotency-key": "k-domain-invalid" },
+      payload: {
+        accountId: "acc-1",
+        symbol: "UNKNOWN",
+        quantity: 1,
+        priceNtd: 100,
+        tradeDate: "2026-01-01",
+        type: "BUY",
+        isDayTrade: false,
+      },
+    });
+
+    expect(first.statusCode).toBe(400);
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/portfolio/transactions",
+      headers: { "idempotency-key": "k-domain-invalid" },
+      payload: {
+        accountId: "acc-1",
+        symbol: "2330",
+        quantity: 1,
+        priceNtd: 100,
+        tradeDate: "2026-01-01",
+        type: "BUY",
+        isDayTrade: false,
+      },
+    });
+
+    expect(second.statusCode).toBe(200);
+  });
+
+  it("rejects corporate actions for unknown account ids", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/corporate-actions",
+      payload: {
+        accountId: "acc-missing",
+        symbol: "2330",
+        actionType: "DIVIDEND",
+        numerator: 1,
+        denominator: 1,
+        actionDate: "2026-01-01",
+      },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error).toBe("account_not_found");
+
+    const actions = await app.inject({ method: "GET", url: "/corporate-actions" });
+    expect(actions.statusCode).toBe(200);
+    expect(actions.json()).toEqual([]);
+  });
+
   it("recompute updates realized pnl on sell transactions", async () => {
     await app.inject({
       method: "POST",

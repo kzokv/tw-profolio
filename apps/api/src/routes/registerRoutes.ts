@@ -185,6 +185,14 @@ function requireProfile(store: Store, profileId: string): FeeProfile {
   return profile;
 }
 
+function requireAccount(store: Store, accountId: string) {
+  const account = store.accounts.find((item) => item.id === accountId);
+  if (!account) {
+    throw routeError(404, "account_not_found", `Account ${accountId} was not found.`);
+  }
+  return account;
+}
+
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.get("/health/live", async () => ({ status: "ok" }));
   app.get("/health/ready", async () => {
@@ -498,20 +506,21 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const userId = resolveUserId(req);
+    const store = await app.persistence.loadStore(userId);
+    const draftStore = structuredClone(store);
+    assertStoreIntegrity(draftStore);
+
+    const tx = createTransaction(draftStore, userId, {
+      ...body,
+      id: randomUUID(),
+    });
+
     const claimed = await app.persistence.claimIdempotencyKey(userId, idempotencyKey);
     if (!claimed) {
       throw routeError(409, "duplicate_idempotency_key", "duplicate idempotency key");
     }
 
-    const store = await app.persistence.loadStore(userId);
-    assertStoreIntegrity(store);
-
-    const tx = createTransaction(store, userId, {
-      ...body,
-      id: randomUUID(),
-    });
-
-    await app.persistence.saveStore(store);
+    await app.persistence.saveStore(draftStore);
     return tx;
   });
 
@@ -535,6 +544,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const body = corporateActionSchema.parse(req.body);
     const { store } = await loadUserStore(app, req);
     assertStoreIntegrity(store);
+    requireAccount(store, body.accountId);
 
     const action = applyCorporateAction(store, {
       id: randomUUID(),
