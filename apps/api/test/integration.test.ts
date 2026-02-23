@@ -224,6 +224,81 @@ describe("api integration", () => {
     expect(userBProfiles.json()[0].name).toBe("Default Broker");
   });
 
+  it("does not partially apply settings/full when bindings are invalid", async () => {
+    const settingsBefore = await app.inject({ method: "GET", url: "/settings" });
+    const settingsBody = settingsBefore.json();
+    const feeConfig = await app.inject({ method: "GET", url: "/settings/fee-config" });
+    const feeConfigBody = feeConfig.json();
+
+    const failedSave = await app.inject({
+      method: "PUT",
+      url: "/settings/full",
+      payload: {
+        settings: {
+          locale: settingsBody.locale === "en" ? "zh-TW" : "en",
+          costBasisMethod: settingsBody.costBasisMethod,
+          quotePollIntervalSeconds: settingsBody.quotePollIntervalSeconds,
+        },
+        feeProfiles: feeConfigBody.feeProfiles.map((profile: { id: string } & Record<string, unknown>) => ({
+          id: profile.id,
+          ...profile,
+        })),
+        accounts: feeConfigBody.accounts.map((account: { id: string; feeProfileId: string }) => ({
+          id: account.id,
+          feeProfileRef: account.feeProfileId,
+        })),
+        feeProfileBindings: [
+          {
+            accountId: "acc-missing",
+            symbol: "2330",
+            feeProfileRef: feeConfigBody.feeProfiles[0].id,
+          },
+        ],
+      },
+    });
+
+    expect(failedSave.statusCode).toBe(400);
+    expect(failedSave.json().error).toBe("invalid_account");
+
+    const settingsAfter = await app.inject({ method: "GET", url: "/settings" });
+    expect(settingsAfter.statusCode).toBe(200);
+    expect(settingsAfter.json()).toEqual(settingsBody);
+  });
+
+  it("does not partially apply ai confirm when one proposal fails", async () => {
+    const confirm = await app.inject({
+      method: "POST",
+      url: "/ai/transactions/confirm",
+      payload: {
+        accountId: "acc-1",
+        proposals: [
+          {
+            type: "BUY",
+            symbol: "2330",
+            quantity: 1,
+            priceNtd: 100,
+            tradeDate: "2026-01-01",
+            isDayTrade: false,
+          },
+          {
+            type: "BUY",
+            symbol: "UNKNOWN",
+            quantity: 1,
+            priceNtd: 100,
+            tradeDate: "2026-01-01",
+            isDayTrade: false,
+          },
+        ],
+      },
+    });
+
+    expect(confirm.statusCode).toBe(400);
+
+    const transactions = await app.inject({ method: "GET", url: "/portfolio/transactions" });
+    expect(transactions.statusCode).toBe(200);
+    expect(transactions.json()).toEqual([]);
+  });
+
   it("recompute updates realized pnl on sell transactions", async () => {
     await app.inject({
       method: "POST",

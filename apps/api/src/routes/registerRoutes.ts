@@ -256,7 +256,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       .parse(req.body);
 
     const { store } = await loadUserStore(app, req);
-    const existingProfilesById = new Map(store.feeProfiles.map((profile) => [profile.id, profile]));
+    const draftStore = structuredClone(store);
+    const existingProfilesById = new Map(draftStore.feeProfiles.map((profile) => [profile.id, profile]));
     const tempIdToProfileId = new Map<string, string>();
     const nextProfiles: FeeProfile[] = [];
 
@@ -308,7 +309,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return resolved;
     };
 
-    const nextAccounts = store.accounts.map((account) => ({ ...account }));
+    const nextAccounts = draftStore.accounts.map((account) => ({ ...account }));
     for (const accountUpdate of body.accounts) {
       const account = nextAccounts.find((item) => item.id === accountUpdate.id);
       if (!account) {
@@ -325,20 +326,20 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       })),
     );
 
-    store.settings = { ...store.settings, ...body.settings };
-    store.feeProfiles = nextProfiles;
-    store.accounts = nextAccounts;
-    ensureBindingsAreValid(store, nextBindings);
-    store.feeProfileBindings = nextBindings;
+    draftStore.settings = { ...draftStore.settings, ...body.settings };
+    draftStore.feeProfiles = nextProfiles;
+    draftStore.accounts = nextAccounts;
+    ensureBindingsAreValid(draftStore, nextBindings);
+    draftStore.feeProfileBindings = nextBindings;
 
-    assertStoreIntegrity(store);
-    await app.persistence.saveStore(store);
+    assertStoreIntegrity(draftStore);
+    await app.persistence.saveStore(draftStore);
 
     return {
-      settings: store.settings,
-      accounts: store.accounts,
-      feeProfiles: store.feeProfiles,
-      feeProfileBindings: store.feeProfileBindings,
+      settings: draftStore.settings,
+      accounts: draftStore.accounts,
+      feeProfiles: draftStore.feeProfiles,
+      feeProfileBindings: draftStore.feeProfileBindings,
     };
   });
 
@@ -674,10 +675,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       .parse(req.body);
 
     const { store, userId } = await loadUserStore(app, req);
-    assertStoreIntegrity(store);
+    const draftStore = structuredClone(store);
+    assertStoreIntegrity(draftStore);
 
     const created = body.proposals.map((proposal, idx) =>
-      createTransaction(store, userId, {
+      createTransaction(draftStore, userId, {
         id: `${randomUUID()}-${idx}`,
         accountId: body.accountId,
         symbol: proposal.symbol,
@@ -689,7 +691,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       }),
     );
 
-    await app.persistence.saveStore(store);
+    await app.persistence.saveStore(draftStore);
     return { created };
   });
 }
