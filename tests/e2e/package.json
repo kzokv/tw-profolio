@@ -1,0 +1,14 @@
+{
+  "name": "@tw-portfolio/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo \"e2e has no build step\"",
+    "test": "bash ./run-playwright-if-supported.sh",
+    "test:ci": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.51.1"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "tw-portfolio",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "libs/*",
+    "tests/e2e"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev": "set -a; [ -f ./.env ] && . ./.env; set +a; npm run dev -w apps/api & npm run dev -w apps/web",
+    "test": "npm run test --workspaces",
+    "test:unit": "npm run test -w libs/domain",
+    "test:integration": "npm run test:integration -w apps/api",
+    "test:e2e": "npm run test -w tests/e2e",
+    "test:e2e:ci": "npm run test:ci -w tests/e2e"
+  }
+}

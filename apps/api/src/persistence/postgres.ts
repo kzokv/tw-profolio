@@ -1,0 +1,612 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { Pool } from "pg";
+import { createClient, type RedisClientType } from "redis";
+import type { FeeProfile } from "@tw-portfolio/domain";
+import type { Quote } from "../providers/marketData.js";
+import type { RecomputeJob, RecomputePreviewItem, Store, Transaction } from "../types/store.js";
+import type { Persistence, ReadinessStatus } from "./types.js";
+
+export interface PostgresPersistenceOptions {
+  databaseUrl: string;
+  redisUrl: string;
+}
+
+export class PostgresPersistence implements Persistence {
+  private readonly pool: Pool;
+  private readonly redis: RedisClientType;
+
+  constructor(private readonly options: PostgresPersistenceOptions) {
+    this.pool = new Pool({ connectionString: options.databaseUrl });
+    this.redis = createClient({ url: options.redisUrl });
+  }
+
+  async init(): Promise<void> {
+    if (!this.redis.isOpen) await this.redis.connect();
+    await this.runMigrations();
+    await this.seedDefaults();
+  }
+
+  async close(): Promise<void> {
+    if (this.redis.isOpen) await this.redis.quit();
+    await this.pool.end();
+  }
+
+  async loadStore(userId: string): Promise<Store> {
+    await this.ensureUserSeed(userId);
+    const userResult = await this.pool.query(
+      `SELECT id, locale, cost_basis_method, quote_poll_interval_seconds
+       FROM users
+       WHERE id = $1`,
+      [userId],
+    );
+
+    const accountsResult = await this.pool.query(
+      `SELECT id, user_id, name, fee_profile_id
+       FROM accounts
+       WHERE user_id = $1
+       ORDER BY id`,
+      [userId],
+    );
+
+    const feeProfilesResult = await this.pool.query(
+      `SELECT id, name, commission_rate_bps, commission_discount_bps, min_commission_ntd,
+              commission_rounding_mode, tax_rounding_mode,
+              stock_sell_tax_rate_bps, stock_day_trade_tax_rate_bps,
+              etf_sell_tax_rate_bps, bond_etf_sell_tax_rate_bps
+       FROM fee_profiles
+       WHERE user_id = $1
+       ORDER BY id`,
+      [userId],
+    );
+
+    const transactionsResult = await this.pool.query(
+      `SELECT id, user_id, account_id, symbol, instrument_type, tx_type, quantity,
+              price_ntd, trade_date, commission_ntd, tax_ntd, is_day_trade,
+              fee_snapshot_json, realized_pnl_ntd
+       FROM transactions
+       WHERE user_id = $1
+       ORDER BY trade_date, id`,
+      [userId],
+    );
+
+    const accountIds = accountsResult.rows.map((row) => row.id);
+    const bindingsResult = accountIds.length
+      ? await this.pool.query(
+          `SELECT account_id, symbol, fee_profile_id
+           FROM account_fee_profile_overrides
+           WHERE account_id = ANY($1)
+           ORDER BY account_id, symbol`,
+          [accountIds],
+        )
+      : { rows: [] };
+
+    const lotsResult = accountIds.length
+      ? await this.pool.query(
+          `SELECT id, account_id, symbol, open_quantity, total_cost_ntd, opened_at
+           FROM lots
+           WHERE account_id = ANY($1)
+           ORDER BY opened_at, id`,
+          [accountIds],
+        )
+      : { rows: [] };
+
+    const actionsResult = accountIds.length
+      ? await this.pool.query(
+          `SELECT id, account_id, symbol, action_type, numerator, denominator, action_date
+           FROM corporate_actions
+           WHERE account_id = ANY($1)
+           ORDER BY action_date, id`,
+          [accountIds],
+        )
+      : { rows: [] };
+
+    const jobsResult = await this.pool.query(
+      `SELECT id, user_id, account_id, profile_id, status, created_at
+       FROM recompute_jobs
+       WHERE user_id = $1
+       ORDER BY created_at, id`,
+      [userId],
+    );
+
+    const jobIds = jobsResult.rows.map((row) => row.id);
+    const jobItemsResult = jobIds.length
+      ? await this.pool.query(
+          `SELECT id, job_id, transaction_id, previous_commission_ntd, previous_tax_ntd,
+                  next_commission_ntd, next_tax_ntd
+           FROM recompute_job_items
+           WHERE job_id = ANY($1)
+           ORDER BY id`,
+          [jobIds],
+        )
+      : { rows: [] };
+
+    const symbolsResult = await this.pool.query(
+      `SELECT ticker, instrument_type
+       FROM symbols
+       ORDER BY ticker`,
+    );
+
+    const feeProfiles: FeeProfile[] = feeProfilesResult.rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      commissionRateBps: row.commission_rate_bps,
+      commissionDiscountBps: row.commission_discount_bps,
+      minCommissionNtd: row.min_commission_ntd,
+      commissionRoundingMode: row.commission_rounding_mode,
+      taxRoundingMode: row.tax_rounding_mode,
+      stockSellTaxRateBps: row.stock_sell_tax_rate_bps,
+      stockDayTradeTaxRateBps: row.stock_day_trade_tax_rate_bps,
+      etfSellTaxRateBps: row.etf_sell_tax_rate_bps,
+      bondEtfSellTaxRateBps: row.bond_etf_sell_tax_rate_bps,
+    }));
+
+    const transactions: Transaction[] = transactionsResult.rows.map((row) => ({
+      id: row.id,
+      userId: row.user_id,
+      accountId: row.account_id,
+      symbol: row.symbol,
+      instrumentType: row.instrument_type,
+      type: row.tx_type,
+      quantity: row.quantity,
+      priceNtd: row.price_ntd,
+      tradeDate: normalizeDate(row.trade_date),
+      commissionNtd: row.commission_ntd,
+      taxNtd: row.tax_ntd,
+      isDayTrade: row.is_day_trade,
+      feeSnapshot: JSON.parse(row.fee_snapshot_json),
+      realizedPnlNtd: row.realized_pnl_ntd ?? undefined,
+    }));
+
+    const recomputeItems = new Map<string, RecomputePreviewItem[]>();
+    for (const item of jobItemsResult.rows) {
+      const list = recomputeItems.get(item.job_id) ?? [];
+      list.push({
+        transactionId: item.transaction_id,
+        previousCommissionNtd: item.previous_commission_ntd,
+        previousTaxNtd: item.previous_tax_ntd,
+        nextCommissionNtd: item.next_commission_ntd,
+        nextTaxNtd: item.next_tax_ntd,
+      });
+      recomputeItems.set(item.job_id, list);
+    }
+
+    const recomputeJobs: RecomputeJob[] = jobsResult.rows.map((row) => ({
+      id: row.id,
+      userId: row.user_id,
+      accountId: row.account_id ?? undefined,
+      profileId: row.profile_id,
+      status: row.status,
+      createdAt: normalizeDateTime(row.created_at),
+      items: recomputeItems.get(row.id) ?? [],
+    }));
+
+    return {
+      userId,
+      settings: {
+        userId,
+        locale: userResult.rows[0].locale,
+        costBasisMethod: userResult.rows[0].cost_basis_method,
+        quotePollIntervalSeconds: userResult.rows[0].quote_poll_interval_seconds,
+      },
+      accounts: accountsResult.rows.map((row) => ({
+        id: row.id,
+        userId: row.user_id,
+        name: row.name,
+        feeProfileId: row.fee_profile_id,
+      })),
+      feeProfileBindings: bindingsResult.rows.map((row) => ({
+        accountId: row.account_id,
+        symbol: row.symbol,
+        feeProfileId: row.fee_profile_id,
+      })),
+      feeProfiles,
+      transactions,
+      lots: lotsResult.rows.map((row) => ({
+        id: row.id,
+        accountId: row.account_id,
+        symbol: row.symbol,
+        openQuantity: row.open_quantity,
+        totalCostNtd: row.total_cost_ntd,
+        openedAt: normalizeDate(row.opened_at),
+      })),
+      symbols: symbolsResult.rows.map((row) => ({
+        ticker: row.ticker,
+        type: row.instrument_type,
+      })),
+      recomputeJobs,
+      corporateActions: actionsResult.rows.map((row) => ({
+        id: row.id,
+        accountId: row.account_id,
+        symbol: row.symbol,
+        actionType: row.action_type,
+        numerator: row.numerator,
+        denominator: row.denominator,
+        actionDate: normalizeDate(row.action_date),
+      })),
+      idempotencyKeys: new Set<string>(),
+    };
+  }
+
+  async saveStore(store: Store): Promise<void> {
+    validateStoreInvariants(store);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      await client.query(
+        `UPDATE users
+         SET locale = $2,
+             cost_basis_method = $3,
+             quote_poll_interval_seconds = $4
+         WHERE id = $1`,
+        [
+          store.userId,
+          store.settings.locale,
+          store.settings.costBasisMethod,
+          store.settings.quotePollIntervalSeconds,
+        ],
+      );
+
+      const feeProfileIds = store.feeProfiles.map((item) => item.id);
+      if (feeProfileIds.length) {
+        await client.query(
+          `DELETE FROM fee_profiles
+           WHERE user_id = $1
+             AND id <> ALL($2)`,
+          [store.userId, feeProfileIds],
+        );
+      }
+
+      for (const profile of store.feeProfiles) {
+        const upsertProfile = await client.query(
+          `INSERT INTO fee_profiles (
+             id, user_id, name, commission_rate_bps, commission_discount_bps,
+             min_commission_ntd, commission_rounding_mode, tax_rounding_mode,
+             stock_sell_tax_rate_bps, stock_day_trade_tax_rate_bps, etf_sell_tax_rate_bps,
+             bond_etf_sell_tax_rate_bps
+           ) VALUES (
+             $1, $2, $3, $4, $5,
+             $6, $7, $8,
+             $9, $10, $11,
+             $12
+           )
+           ON CONFLICT (id)
+           DO UPDATE SET
+             name = EXCLUDED.name,
+             commission_rate_bps = EXCLUDED.commission_rate_bps,
+             commission_discount_bps = EXCLUDED.commission_discount_bps,
+             min_commission_ntd = EXCLUDED.min_commission_ntd,
+             commission_rounding_mode = EXCLUDED.commission_rounding_mode,
+             tax_rounding_mode = EXCLUDED.tax_rounding_mode,
+             stock_sell_tax_rate_bps = EXCLUDED.stock_sell_tax_rate_bps,
+             stock_day_trade_tax_rate_bps = EXCLUDED.stock_day_trade_tax_rate_bps,
+             etf_sell_tax_rate_bps = EXCLUDED.etf_sell_tax_rate_bps,
+             bond_etf_sell_tax_rate_bps = EXCLUDED.bond_etf_sell_tax_rate_bps
+           WHERE fee_profiles.user_id = EXCLUDED.user_id`,
+          [
+            profile.id,
+            store.userId,
+            profile.name,
+            profile.commissionRateBps,
+            profile.commissionDiscountBps,
+            profile.minCommissionNtd,
+            profile.commissionRoundingMode,
+            profile.taxRoundingMode,
+            profile.stockSellTaxRateBps,
+            profile.stockDayTradeTaxRateBps,
+            profile.etfSellTaxRateBps,
+            profile.bondEtfSellTaxRateBps,
+          ],
+        );
+
+        if (upsertProfile.rowCount !== 1) {
+          throw new Error(`Fee profile id conflict for id=${profile.id}`);
+        }
+      }
+
+      const accountIds = store.accounts.map((item) => item.id);
+      if (accountIds.length) {
+        await client.query(
+          `DELETE FROM accounts
+           WHERE user_id = $1
+             AND id <> ALL($2)`,
+          [store.userId, accountIds],
+        );
+      }
+
+      for (const account of store.accounts) {
+        const upsertAccount = await client.query(
+          `INSERT INTO accounts (id, user_id, name, fee_profile_id)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (id)
+           DO UPDATE SET
+             name = EXCLUDED.name,
+             fee_profile_id = EXCLUDED.fee_profile_id
+           WHERE accounts.user_id = EXCLUDED.user_id`,
+          [account.id, account.userId, account.name, account.feeProfileId],
+        );
+
+        if (upsertAccount.rowCount !== 1) {
+          throw new Error(`Account id conflict for id=${account.id}`);
+        }
+      }
+
+      if (accountIds.length) {
+        await client.query(`DELETE FROM account_fee_profile_overrides WHERE account_id = ANY($1)`, [accountIds]);
+        for (const binding of store.feeProfileBindings) {
+          await client.query(
+            `INSERT INTO account_fee_profile_overrides (account_id, symbol, fee_profile_id)
+             VALUES ($1, $2, $3)`,
+            [binding.accountId, binding.symbol, binding.feeProfileId],
+          );
+        }
+      }
+
+      await client.query(`DELETE FROM transactions WHERE user_id = $1`, [store.userId]);
+      for (const tx of store.transactions) {
+        await client.query(
+          `INSERT INTO transactions (
+             id, user_id, account_id, symbol, instrument_type, tx_type,
+             quantity, price_ntd, trade_date, commission_ntd, tax_ntd,
+             is_day_trade, fee_profile_id, fee_snapshot_json, realized_pnl_ntd
+           ) VALUES (
+             $1, $2, $3, $4, $5, $6,
+             $7, $8, $9, $10, $11,
+             $12, $13, $14, $15
+           )`,
+          [
+            tx.id,
+            tx.userId,
+            tx.accountId,
+            tx.symbol,
+            tx.instrumentType,
+            tx.type,
+            tx.quantity,
+            tx.priceNtd,
+            tx.tradeDate,
+            tx.commissionNtd,
+            tx.taxNtd,
+            tx.isDayTrade,
+            tx.feeSnapshot.id,
+            JSON.stringify(tx.feeSnapshot),
+            tx.realizedPnlNtd ?? null,
+          ],
+        );
+      }
+
+      if (accountIds.length) {
+        await client.query(`DELETE FROM lots WHERE account_id = ANY($1)`, [accountIds]);
+        for (const lot of store.lots) {
+          await client.query(
+            `INSERT INTO lots (id, account_id, symbol, open_quantity, total_cost_ntd, opened_at)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [lot.id, lot.accountId, lot.symbol, lot.openQuantity, lot.totalCostNtd, lot.openedAt],
+          );
+        }
+
+        await client.query(`DELETE FROM corporate_actions WHERE account_id = ANY($1)`, [accountIds]);
+        for (const action of store.corporateActions) {
+          await client.query(
+            `INSERT INTO corporate_actions (
+               id, account_id, symbol, action_type, numerator, denominator, action_date
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+              action.id,
+              action.accountId,
+              action.symbol,
+              action.actionType,
+              action.numerator,
+              action.denominator,
+              action.actionDate,
+            ],
+          );
+        }
+      }
+
+      const jobIds = store.recomputeJobs.map((item) => item.id);
+      if (jobIds.length) {
+        await client.query(`DELETE FROM recompute_job_items WHERE job_id = ANY($1)`, [jobIds]);
+      }
+      await client.query(`DELETE FROM recompute_jobs WHERE user_id = $1`, [store.userId]);
+
+      for (const job of store.recomputeJobs) {
+        await client.query(
+          `INSERT INTO recompute_jobs (id, user_id, account_id, profile_id, status, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [job.id, job.userId, job.accountId ?? null, job.profileId, job.status, job.createdAt],
+        );
+
+        for (const item of job.items) {
+          await client.query(
+            `INSERT INTO recompute_job_items (
+               id, job_id, transaction_id, previous_commission_ntd, previous_tax_ntd,
+               next_commission_ntd, next_tax_ntd
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+              `${job.id}:${item.transactionId}`,
+              job.id,
+              item.transactionId,
+              item.previousCommissionNtd,
+              item.previousTaxNtd,
+              item.nextCommissionNtd,
+              item.nextTaxNtd,
+            ],
+          );
+        }
+      }
+
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async claimIdempotencyKey(userId: string, key: string): Promise<boolean> {
+    const redisKey = `idempotency:${userId}:${key}`;
+    const result = await this.redis.set(redisKey, "1", { EX: 86_400, NX: true });
+    return result === "OK";
+  }
+
+  async getCachedQuotes(symbols: string[]): Promise<Record<string, Quote>> {
+    if (symbols.length === 0) return {};
+    const keys = symbols.map((symbol) => `quote:${symbol}`);
+    const values = await this.redis.mGet(keys);
+    const found: Record<string, Quote> = {};
+
+    values.forEach((raw: string | null, index: number) => {
+      if (!raw) return;
+      found[symbols[index]] = JSON.parse(raw) as Quote;
+    });
+
+    return found;
+  }
+
+  async cacheQuotes(quotes: Quote[]): Promise<void> {
+    if (quotes.length === 0) return;
+    const pipeline = this.redis.multi();
+    for (const quote of quotes) {
+      pipeline.set(`quote:${quote.symbol}`, JSON.stringify(quote), { EX: 30 });
+    }
+    await pipeline.exec();
+  }
+
+  async readiness(): Promise<ReadinessStatus> {
+    const status: ReadinessStatus = {
+      backend: "postgres",
+      postgres: false,
+      redis: false,
+    };
+
+    try {
+      await this.pool.query("SELECT 1");
+      status.postgres = true;
+    } catch {
+      status.postgres = false;
+    }
+
+    try {
+      if (!this.redis.isOpen) await this.redis.connect();
+      await this.redis.ping();
+      status.redis = true;
+    } catch {
+      status.redis = false;
+    }
+
+    return status;
+  }
+
+  private async runMigrations(): Promise<void> {
+    const currentDir = path.dirname(fileURLToPath(import.meta.url));
+    const migrationPath = path.resolve(currentDir, "../../../../db/migrations/001_init.sql");
+    const migrationSql = await fs.readFile(migrationPath, "utf8");
+    await this.pool.query(migrationSql);
+  }
+
+  private async seedDefaults(): Promise<void> {
+    await this.seedSymbols();
+    await this.ensureUserSeed("user-1");
+  }
+
+  private async seedSymbols(): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO symbols (ticker, instrument_type)
+       VALUES
+         ('2330', 'STOCK'),
+         ('0050', 'ETF'),
+         ('00679B', 'BOND_ETF')
+       ON CONFLICT (ticker) DO UPDATE SET instrument_type = EXCLUDED.instrument_type`,
+    );
+  }
+
+  private async ensureUserSeed(userId: string): Promise<void> {
+    const feeProfileId = this.defaultFeeProfileId(userId);
+    const accountId = this.defaultAccountId(userId);
+
+    await this.pool.query(
+      `INSERT INTO users (id, email, locale, cost_basis_method, quote_poll_interval_seconds)
+       VALUES ($1, $2, 'en', 'FIFO', 10)
+       ON CONFLICT (id) DO NOTHING`,
+      [userId, `${userId}@example.com`],
+    );
+
+    await this.pool.query(
+      `INSERT INTO fee_profiles (
+         id, user_id, name, commission_rate_bps, commission_discount_bps,
+         min_commission_ntd, commission_rounding_mode, tax_rounding_mode,
+         stock_sell_tax_rate_bps, stock_day_trade_tax_rate_bps,
+         etf_sell_tax_rate_bps, bond_etf_sell_tax_rate_bps
+       ) VALUES (
+         $1, $2, 'Default Broker', 14, 10000,
+         20, 'FLOOR', 'FLOOR',
+         30, 15,
+         10, 0
+       )
+       ON CONFLICT (id) DO NOTHING`,
+      [feeProfileId, userId],
+    );
+
+    await this.pool.query(
+      `INSERT INTO accounts (id, user_id, name, fee_profile_id)
+       VALUES ($1, $2, 'Main', $3)
+       ON CONFLICT (id) DO NOTHING`,
+      [accountId, userId, feeProfileId],
+    );
+  }
+
+  private defaultFeeProfileId(userId: string): string {
+    return `${userId}-fp-default`;
+  }
+
+  private defaultAccountId(userId: string): string {
+    return `${userId}-acc-1`;
+  }
+}
+
+function validateStoreInvariants(store: Store): void {
+  if (!store.userId) {
+    throw new Error("store user id is required");
+  }
+
+  const profilesById = new Set(store.feeProfiles.map((profile) => profile.id));
+  if (profilesById.size === 0) {
+    throw new Error("at least one fee profile is required");
+  }
+
+  for (const account of store.accounts) {
+    if (account.userId !== store.userId) {
+      throw new Error(`account ${account.id} belongs to unexpected user`);
+    }
+
+    if (!profilesById.has(account.feeProfileId)) {
+      throw new Error(`account ${account.id} references missing fee profile ${account.feeProfileId}`);
+    }
+  }
+
+  const accountIds = new Set(store.accounts.map((account) => account.id));
+  for (const binding of store.feeProfileBindings) {
+    if (!accountIds.has(binding.accountId)) {
+      throw new Error(`fee profile binding references unknown account ${binding.accountId}`);
+    }
+    if (!profilesById.has(binding.feeProfileId)) {
+      throw new Error(`fee profile binding references unknown profile ${binding.feeProfileId}`);
+    }
+    if (!/^[A-Za-z0-9]{1,16}$/.test(binding.symbol)) {
+      throw new Error(`fee profile binding has invalid symbol ${binding.symbol}`);
+    }
+  }
+}
+
+function normalizeDate(value: string | Date): string {
+  if (typeof value === "string") return value.slice(0, 10);
+  return value.toISOString().slice(0, 10);
+}
+
+function normalizeDateTime(value: string | Date): string {
+  if (typeof value === "string") return new Date(value).toISOString();
+  return value.toISOString();
+}
