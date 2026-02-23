@@ -13,6 +13,7 @@ export interface Persistence {
   loadStore(userId: string): Promise<Store>;
   saveStore(store: Store): Promise<void>;
   claimIdempotencyKey(userId: string, key: string): Promise<boolean>;
+  releaseIdempotencyKey(userId: string, key: string): Promise<void>;
   getCachedQuotes(symbols: string[]): Promise<Record<string, Quote>>;
   cacheQuotes(quotes: Quote[]): Promise<void>;
   readiness(): Promise<ReadinessStatus>;

@@ -37,6 +37,13 @@ export class MemoryPersistence implements Persistence {
     return true;
   }
 
+  async releaseIdempotencyKey(userId: string, key: string): Promise<void> {
+    const existing = this.idempotencyKeys.get(userId);
+    if (!existing) return;
+    existing.delete(key);
+    if (existing.size === 0) this.idempotencyKeys.delete(userId);
+  }
+
   async getCachedQuotes(symbols: string[]): Promise<Record<string, Quote>> {
     const found: Record<string, Quote> = {};
     for (const symbol of symbols) {

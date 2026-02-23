@@ -455,6 +455,10 @@ export class PostgresPersistence implements Persistence {
     return result === "OK";
   }
 
+  async releaseIdempotencyKey(userId: string, key: string): Promise<void> {
+    await this.redis.del(`idempotency:${userId}:${key}`);
+  }
+
   async getCachedQuotes(symbols: string[]): Promise<Record<string, Quote>> {
     if (symbols.length === 0) return {};
     const keys = symbols.map((symbol) => `quote:${symbol}`);

@@ -299,6 +299,166 @@ describe("api integration", () => {
     expect(transactions.json()).toEqual([]);
   });
 
+  it("does not partially apply settings/fee-config when bindings are invalid", async () => {
+    const before = await app.inject({ method: "GET", url: "/settings/fee-config" });
+    const beforeBody = before.json();
+    const account = beforeBody.accounts[0];
+
+    const createdProfileResponse = await app.inject({
+      method: "POST",
+      url: "/fee-profiles",
+      payload: {
+        name: "Alt Profile",
+        commissionRateBps: 1,
+        commissionDiscountBps: 10000,
+        minCommissionNtd: 0,
+        commissionRoundingMode: "FLOOR",
+        taxRoundingMode: "FLOOR",
+        stockSellTaxRateBps: 30,
+        stockDayTradeTaxRateBps: 15,
+        etfSellTaxRateBps: 10,
+        bondEtfSellTaxRateBps: 0,
+      },
+    });
+    expect(createdProfileResponse.statusCode).toBe(200);
+    const createdProfile = createdProfileResponse.json();
+
+    const failedUpdate = await app.inject({
+      method: "PUT",
+      url: "/settings/fee-config",
+      payload: {
+        accounts: [
+          {
+            id: account.id,
+            feeProfileId: createdProfile.id,
+          },
+        ],
+        feeProfileBindings: [
+          {
+            accountId: "acc-missing",
+            symbol: "2330",
+            feeProfileId: createdProfile.id,
+          },
+        ],
+      },
+    });
+
+    expect(failedUpdate.statusCode).toBe(400);
+    expect(failedUpdate.json().error).toBe("invalid_account");
+
+    const after = await app.inject({ method: "GET", url: "/settings/fee-config" });
+    expect(after.statusCode).toBe(200);
+    expect(after.json().accounts[0].feeProfileId).toBe(account.feeProfileId);
+  });
+
+  it("prevents deleting fee profiles referenced by historical transactions", async () => {
+    const createdProfileResponse = await app.inject({
+      method: "POST",
+      url: "/fee-profiles",
+      payload: {
+        name: "Tx Profile",
+        commissionRateBps: 2,
+        commissionDiscountBps: 10000,
+        minCommissionNtd: 0,
+        commissionRoundingMode: "FLOOR",
+        taxRoundingMode: "FLOOR",
+        stockSellTaxRateBps: 30,
+        stockDayTradeTaxRateBps: 15,
+        etfSellTaxRateBps: 10,
+        bondEtfSellTaxRateBps: 0,
+      },
+    });
+    const profile = createdProfileResponse.json();
+
+    const updateFeeConfig = await app.inject({
+      method: "PUT",
+      url: "/settings/fee-config",
+      payload: {
+        accounts: [{ id: "acc-1", feeProfileId: profile.id }],
+        feeProfileBindings: [],
+      },
+    });
+    expect(updateFeeConfig.statusCode).toBe(200);
+
+    const txResponse = await app.inject({
+      method: "POST",
+      url: "/portfolio/transactions",
+      headers: { "idempotency-key": "k-delete-in-use-profile" },
+      payload: {
+        accountId: "acc-1",
+        symbol: "2330",
+        quantity: 1,
+        priceNtd: 100,
+        tradeDate: "2026-01-01",
+        type: "BUY",
+        isDayTrade: false,
+      },
+    });
+    expect(txResponse.statusCode).toBe(200);
+
+    const restoreDefault = await app.inject({
+      method: "PUT",
+      url: "/settings/fee-config",
+      payload: {
+        accounts: [{ id: "acc-1", feeProfileId: "fp-default" }],
+        feeProfileBindings: [],
+      },
+    });
+    expect(restoreDefault.statusCode).toBe(200);
+
+    const deleteResponse = await app.inject({
+      method: "DELETE",
+      url: `/fee-profiles/${profile.id}`,
+    });
+    expect(deleteResponse.statusCode).toBe(409);
+    expect(deleteResponse.json().error).toBe("fee_profile_in_use");
+  });
+
+  it("releases idempotency key when persistence fails", async () => {
+    const originalSaveStore = app.persistence.saveStore.bind(app.persistence);
+    let failOnce = true;
+    app.persistence.saveStore = async (...args) => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error("forced save failure");
+      }
+      return originalSaveStore(...args);
+    };
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/portfolio/transactions",
+      headers: { "idempotency-key": "k-save-fail" },
+      payload: {
+        accountId: "acc-1",
+        symbol: "2330",
+        quantity: 1,
+        priceNtd: 100,
+        tradeDate: "2026-01-01",
+        type: "BUY",
+        isDayTrade: false,
+      },
+    });
+    expect(first.statusCode).toBe(500);
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/portfolio/transactions",
+      headers: { "idempotency-key": "k-save-fail" },
+      payload: {
+        accountId: "acc-1",
+        symbol: "2330",
+        quantity: 1,
+        priceNtd: 100,
+        tradeDate: "2026-01-01",
+        type: "BUY",
+        isDayTrade: false,
+      },
+    });
+
+    expect(second.statusCode).toBe(200);
+  });
+
   it("recompute updates realized pnl on sell transactions", async () => {
     await app.inject({
       method: "POST",

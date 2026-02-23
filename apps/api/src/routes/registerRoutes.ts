@@ -369,10 +369,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       .parse(req.body);
 
     const { store } = await loadUserStore(app, req);
-    const feeProfileIds = new Set(store.feeProfiles.map((profile) => profile.id));
+    const draftStore = structuredClone(store);
+    const feeProfileIds = new Set(draftStore.feeProfiles.map((profile) => profile.id));
 
     for (const update of body.accounts) {
-      const account = store.accounts.find((item) => item.id === update.id);
+      const account = draftStore.accounts.find((item) => item.id === update.id);
       if (!account) {
         throw routeError(404, "account_not_found", `Account ${update.id} was not found.`);
       }
@@ -383,15 +384,15 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const normalizedBindings = normalizeBindings(body.feeProfileBindings);
-    ensureBindingsAreValid(store, normalizedBindings);
-    store.feeProfileBindings = normalizedBindings;
+    ensureBindingsAreValid(draftStore, normalizedBindings);
+    draftStore.feeProfileBindings = normalizedBindings;
 
-    assertStoreIntegrity(store);
-    await app.persistence.saveStore(store);
+    assertStoreIntegrity(draftStore);
+    await app.persistence.saveStore(draftStore);
 
     return {
-      accounts: store.accounts,
-      feeProfileBindings: store.feeProfileBindings,
+      accounts: draftStore.accounts,
+      feeProfileBindings: draftStore.feeProfileBindings,
     };
   });
 
@@ -462,11 +463,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
     const isDefaultInUse = store.accounts.some((account) => account.feeProfileId === params.id);
     const isOverrideInUse = store.feeProfileBindings.some((binding) => binding.feeProfileId === params.id);
-    if (isDefaultInUse || isOverrideInUse) {
+    const isTransactionInUse = store.transactions.some((tx) => tx.feeSnapshot.id === params.id);
+    if (isDefaultInUse || isOverrideInUse || isTransactionInUse) {
       throw routeError(
         409,
         "fee_profile_in_use",
-        "Fee profile is still used by account fallback or per-security override bindings.",
+        "Fee profile is still used by accounts, bindings, or historical transactions.",
       );
     }
 
@@ -521,7 +523,13 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       throw routeError(409, "duplicate_idempotency_key", "duplicate idempotency key");
     }
 
-    await app.persistence.saveStore(draftStore);
+    try {
+      await app.persistence.saveStore(draftStore);
+    } catch (error) {
+      await app.persistence.releaseIdempotencyKey(userId, idempotencyKey);
+      throw error;
+    }
+
     return tx;
   });
 
