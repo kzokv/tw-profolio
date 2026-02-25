@@ -26,6 +26,17 @@ All ports are configurable via env vars:
 3. Start infra: `docker compose -f infra/docker/docker-compose.yml up -d`
 4. Start API and web: `npm run dev`
 
+## Development infrastructure modes
+
+- Default local mode:
+  - Start local infra with `docker compose -f infra/docker/docker-compose.yml up -d`.
+  - Keep `PERSISTENCE_BACKEND=postgres` with local `DB_URL`/`REDIS_URL`.
+- QNAP persistent dev mode:
+  - Use persistent Postgres/Redis hosted on QNAP and point `ubuntu-dev` to QNAP LAN IP.
+  - For a comprehensive QNAP persistent dev stack guide, see: https://github.com/kzokv/qnap.
+- Fast no-infra mode:
+  - Set `PERSISTENCE_BACKEND=memory` for runs that do not require DB/Redis persistence.
+
 ## Test
 
 - Unit: `npm run test:unit`

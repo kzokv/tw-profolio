@@ -6,6 +6,11 @@
 - API: `npm run dev -w apps/api`
 - Web: `npm run dev -w apps/web`
 
+## Persistent dev on QNAP
+
+- For a comprehensive QNAP persistent dev stack guide, see the dedicated repo: https://github.com/kzokv/qnap.
+- Keep this runbook for the generic local compose workflow.
+
 ## Required env
 
 - `WEB_PORT`
@@ -26,6 +31,7 @@
 - In production-like environments, use `AUTH_MODE=oauth`.
 - Recompute history is explicit and audited through preview/confirm APIs.
 - For local tests without DB/Redis, set `PERSISTENCE_BACKEND=memory`.
+- Planned production stack (documented later): `api-prod`, `web-prod`, `postgres-prod`, `cloudflared`.
 
 ## Settings drawer behavior
 
