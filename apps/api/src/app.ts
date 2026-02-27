@@ -1,7 +1,7 @@
 import Fastify, { type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import { ZodError } from "zod";
-import { env, getAllowedOrigins } from "./config/env.js";
+import { env, getAllowedOrigins, normalizeOrigin } from "./config/env.js";
 import { createPersistence } from "./persistence/index.js";
 import { registerRoutes } from "./routes/registerRoutes.js";
 
@@ -52,6 +52,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   });
 
   const allowedOrigins = getAllowedOrigins();
+  const normalizedAllowed = new Set(allowedOrigins.map(normalizeOrigin));
   await app.register(cors, {
     credentials: true,
     origin(origin, callback) {
@@ -60,7 +61,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
         return;
       }
 
-      if (allowedOrigins.includes(origin)) {
+      if (normalizedAllowed.has(normalizeOrigin(origin))) {
         callback(null, true);
         return;
       }

@@ -43,10 +43,16 @@ export function getRedisUrl(): string {
   return env.REDIS_URL ?? `redis://127.0.0.1:${env.REDIS_PORT}`;
 }
 
+/** Normalize origin for comparison: trim and remove trailing slash (browser sends no path). */
+export function normalizeOrigin(origin: string): string {
+  const t = origin.trim();
+  return t.endsWith("/") ? t.slice(0, -1) : t;
+}
+
 export function getAllowedOrigins(): string[] {
   return (env.ALLOWED_ORIGINS ?? "")
     .split(",")
-    .map((item) => item.trim())
+    .map((item) => normalizeOrigin(item.trim()))
     .filter(Boolean);
 }
 

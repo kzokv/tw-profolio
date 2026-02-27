@@ -78,7 +78,8 @@ If the host has less than 8 GB RAM, reduce the per-container limits in
    ```
 
 3. Configure cloudflared tunnel in the Cloudflare Zero Trust dashboard
-   (see `infra/cloudflared/README.md`)
+   (see `infra/cloudflared/README.md`). **You must add both public hostnames**
+   (web and API); otherwise the browser cannot resolve the API hostname.
 
 4. Deploy:
    ```bash
@@ -128,6 +129,46 @@ docker logs twp-prod-postgres --tail 50
 docker logs twp-prod-redis --tail 50
 docker logs twp-prod-cloudflared --tail 50
 ```
+
+### API requests fail with `net::ERR_NAME_NOT_RESOLVED` (e.g. `/settings`, `/portfolio/holdings`)
+
+The browser cannot resolve the API hostname (`twp-api.kzokvdevs.dpdns.org`) to an IP.
+This is a **DNS / Cloudflare Tunnel configuration** issue, not an app bug.
+
+1. **Confirm both tunnel hostnames exist**  
+   In **Cloudflare Zero Trust** → **Networks** → **Tunnels** → your tunnel → **Public Hostname**:
+   - `twp-web.kzokvdevs.dpdns.org` → `http://twp-prod-web:3000`
+   - `twp-api.kzokvdevs.dpdns.org` → `http://twp-prod-api:4000`  
+   If the API hostname is missing, add it (same tunnel). Cloudflare will create the CNAME for the API subdomain.
+
+2. **Verify DNS from the same network as users**  
+   From a machine that uses the same DNS as the browser (e.g. your laptop):
+   ```bash
+   getent hosts twp-api.kzokvdevs.dpdns.org
+   # or: nslookup twp-api.kzokvdevs.dpdns.org
+   ```
+   If it does not resolve, the record is missing or not yet propagated; fix in step 1 and allow TTL/propagation.
+
+3. **Ensure the zone is on Cloudflare**  
+   The domain `kzokvdevs.dpdns.org` (or the zone that contains it) must be added to Cloudflare so the tunnel can create CNAMEs. If DNS for that zone is elsewhere, you must create a CNAME for `twp-api.kzokvdevs.dpdns.org` pointing to your tunnel’s address (e.g. `<tunnel-id>.cfargotunnel.com`), as shown in the tunnel’s Public Hostname list.
+
+After fixing DNS, no redeploy is needed; the web app already uses the correct API URL.
+
+### API requests show Response status 0 (CORS)
+
+If the request to `twp-api...` shows **status 0** in DevTools and the page origin is `twp-web...`, the browser is likely blocking the response due to CORS (missing or wrong `Access-Control-Allow-Origin`).
+
+1. **Check the API’s allowed origin** on the server:
+   ```bash
+   docker exec twp-prod-api printenv ALLOWED_ORIGINS
+   ```
+   It must be exactly `https://twp-web.kzokvdevs.dpdns.org` (no trailing slash). It is set from `PUBLIC_DOMAIN_WEB` in `docker-compose.prod.yml` via `ALLOWED_ORIGINS: https://${PUBLIC_DOMAIN_WEB:-...}`.
+
+2. **Ensure `.env.prod` has** `PUBLIC_DOMAIN_WEB=twp-web.kzokvdevs.dpdns.org` (no trailing slash), then redeploy so the API container gets the correct env.
+
+3. **Browser console**: Look for a CORS error message, e.g. “blocked by CORS policy: No 'Access-Control-Allow-Origin' header”.
+
+4. **Quick test**: Open `https://twp-api.kzokvdevs.dpdns.org/health/live` in a new tab. If it returns JSON, the API and DNS are fine and the issue is CORS for the web origin.
 
 ### Rollback
 
