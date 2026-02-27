@@ -25,7 +25,8 @@
 ### Notes
 
 - Use `AUTH_MODE=dev_bypass` for local development only.
-- In production-like environments, use `AUTH_MODE=oauth`.
+- In production-like environments, use `AUTH_MODE=oauth`. When `AUTH_MODE=oauth`, the API requires the request header `x-authenticated-user-id`. The web app sends it when `NEXT_PUBLIC_AUTH_USER_ID` is set (production: set `AUTH_USER_ID` in `infra/docker/.env.prod`; it is passed as a build arg so the web image must be rebuilt after changing it). If `AUTH_USER_ID` is left blank while `AUTH_MODE=oauth`, the web app will send no auth header and API calls like `GET /settings` will return 401.
+- When using `AUTH_USER_ID` / `NEXT_PUBLIC_AUTH_USER_ID`, the user id is embedded into the client bundle and is visible to anyone who can load the web app. This is acceptable for the intended single-user home-lab deployment; do not reuse this pattern for multi-tenant or untrusted-user environments.
 - Recompute history is explicit and audited through preview/confirm APIs.
 - For local tests without DB/Redis, set `PERSISTENCE_BACKEND=memory`.
 
@@ -73,9 +74,10 @@ If the host has less than 8 GB RAM, reduce the per-container limits in
 2. Create the production env file:
    ```bash
    cp infra/docker/.env.prod.example infra/docker/.env.prod
-   # Edit .env.prod with real passwords and tunnel token
+   # Edit .env.prod with real passwords, tunnel token, and AUTH_USER_ID (required for AUTH_MODE=oauth)
    chmod 600 infra/docker/.env.prod
    ```
+   With `AUTH_MODE=oauth`, set `AUTH_USER_ID` to a stable user id (e.g. `user-1` or your email). The web app sends it as `x-authenticated-user-id` on every API request so endpoints like `GET /settings` succeed instead of returning 401.
 
 3. Configure cloudflared tunnel in the Cloudflare Zero Trust dashboard
    (see `infra/cloudflared/README.md`). **You must add both public hostnames**
