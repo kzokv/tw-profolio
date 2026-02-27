@@ -18,17 +18,20 @@ export function AddTransactionCard({ value, accountOptions, pending, onChange, o
     onChange({ ...value, [key]: nextValue });
   }
 
+  const selectedAccount = accountOptions.find((a) => a.id === value.accountId);
+  const accountSelectTitle = selectedAccount ? `${selectedAccount.name} (${selectedAccount.id})` : "";
+
   return (
     <Card className="animate-fade-in-up">
-      <div className="mb-4">
-        <h2 className="text-2xl">{dict.transactions.title}</h2>
-        <p className="mt-1 text-sm text-muted">{dict.transactions.description}</p>
+      <div className="mb-4 min-w-0">
+        <h2 className="text-xl leading-tight text-ink sm:text-2xl md:text-3xl md:leading-none">{dict.transactions.title}</h2>
+        <p className="mt-2 text-sm text-muted break-words">{dict.transactions.description}</p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <label className="space-y-1 text-sm">
-          <span className="flex items-center gap-1 text-xs uppercase tracking-[0.08em] text-muted">
-            {dict.transactions.accountTerm}
+      <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2">
+        <label className="min-w-0 space-y-1 text-sm">
+          <span className="flex min-w-0 flex-wrap items-center gap-1 text-xs uppercase tracking-[0.08em] text-muted">
+            <span className="min-w-0">{dict.transactions.accountTerm}</span>
             <TooltipInfo
               label={dict.transactions.accountTerm}
               content={dict.tooltips.txAccount}
@@ -39,7 +42,8 @@ export function AddTransactionCard({ value, accountOptions, pending, onChange, o
           <select
             value={value.accountId}
             onChange={(event) => setField("accountId", event.target.value)}
-            className="h-10 w-full rounded-md border border-line bg-[#fffaf1] px-3"
+            title={accountSelectTitle}
+            className="h-10 min-w-0 w-full max-w-full rounded-md border border-line bg-[#fffaf1] px-3"
             data-testid="tx-account-select"
           >
             {accountOptions.map((account) => (
@@ -50,9 +54,9 @@ export function AddTransactionCard({ value, accountOptions, pending, onChange, o
           </select>
         </label>
 
-        <label className="space-y-1 text-sm">
-          <span className="flex items-center gap-1 text-xs uppercase tracking-[0.08em] text-muted">
-            {dict.transactions.typeTerm}
+        <label className="min-w-0 space-y-1 text-sm">
+          <span className="flex min-w-0 flex-wrap items-center gap-1 text-xs uppercase tracking-[0.08em] text-muted">
+            <span className="min-w-0">{dict.transactions.typeTerm}</span>
             <TooltipInfo
               label={dict.transactions.typeTerm}
               content={dict.tooltips.txType}
@@ -63,16 +67,16 @@ export function AddTransactionCard({ value, accountOptions, pending, onChange, o
           <select
             value={value.type}
             onChange={(event) => setField("type", event.target.value as "BUY" | "SELL")}
-            className="h-10 w-full rounded-md border border-line bg-[#fffaf1] px-3"
+            className="h-10 min-w-0 w-full max-w-full rounded-md border border-line bg-[#fffaf1] px-3"
           >
             <option value="BUY">{dict.transactions.typeBuy}</option>
             <option value="SELL">{dict.transactions.typeSell}</option>
           </select>
         </label>
 
-        <label className="space-y-1 text-sm">
-          <span className="flex items-center gap-1 text-xs uppercase tracking-[0.08em] text-muted">
-            {dict.transactions.symbolTerm}
+        <label className="min-w-0 space-y-1 text-sm">
+          <span className="flex min-w-0 flex-wrap items-center gap-1 text-xs uppercase tracking-[0.08em] text-muted">
+            <span className="min-w-0">{dict.transactions.symbolTerm}</span>
             <TooltipInfo
               label={dict.transactions.symbolTerm}
               content={dict.tooltips.txSymbol}
@@ -83,13 +87,13 @@ export function AddTransactionCard({ value, accountOptions, pending, onChange, o
           <input
             value={value.symbol}
             onChange={(event) => setField("symbol", event.target.value)}
-            className="h-10 w-full rounded-md border border-line bg-[#fffaf1] px-3"
+            className="h-10 min-w-0 w-full max-w-full rounded-md border border-line bg-[#fffaf1] px-3"
           />
         </label>
 
-        <label className="space-y-1 text-sm">
-          <span className="flex items-center gap-1 text-xs uppercase tracking-[0.08em] text-muted">
-            {dict.transactions.quantityTerm}
+        <label className="min-w-0 space-y-1 text-sm">
+          <span className="flex min-w-0 flex-wrap items-center gap-1 text-xs uppercase tracking-[0.08em] text-muted">
+            <span className="min-w-0">{dict.transactions.quantityTerm}</span>
             <TooltipInfo
               label={dict.transactions.quantityTerm}
               content={dict.tooltips.txQuantity}
@@ -101,14 +105,14 @@ export function AddTransactionCard({ value, accountOptions, pending, onChange, o
             type="number"
             value={value.quantity}
             onChange={(event) => setField("quantity", Number(event.target.value))}
-            className="h-10 w-full rounded-md border border-line bg-[#fffaf1] px-3"
+            className="h-10 min-w-0 w-full max-w-full rounded-md border border-line bg-[#fffaf1] px-3"
             data-testid="tx-quantity-input"
           />
         </label>
 
-        <label className="space-y-1 text-sm">
-          <span className="flex items-center gap-1 text-xs uppercase tracking-[0.08em] text-muted">
-            {dict.transactions.priceTerm}
+        <label className="min-w-0 space-y-1 text-sm">
+          <span className="flex min-w-0 flex-wrap items-center gap-1 text-xs uppercase tracking-[0.08em] text-muted">
+            <span className="min-w-0">{dict.transactions.priceTerm}</span>
             <TooltipInfo
               label={dict.transactions.priceTerm}
               content={dict.tooltips.txPrice}
@@ -120,14 +124,14 @@ export function AddTransactionCard({ value, accountOptions, pending, onChange, o
             type="number"
             value={value.priceNtd}
             onChange={(event) => setField("priceNtd", Number(event.target.value))}
-            className="h-10 w-full rounded-md border border-line bg-[#fffaf1] px-3"
+            className="h-10 min-w-0 w-full max-w-full rounded-md border border-line bg-[#fffaf1] px-3"
             data-testid="tx-price-input"
           />
         </label>
 
-        <label className="space-y-1 text-sm">
-          <span className="flex items-center gap-1 text-xs uppercase tracking-[0.08em] text-muted">
-            {dict.transactions.tradeDateTerm}
+        <label className="min-w-0 space-y-1 text-sm">
+          <span className="flex min-w-0 flex-wrap items-center gap-1 text-xs uppercase tracking-[0.08em] text-muted">
+            <span className="min-w-0">{dict.transactions.tradeDateTerm}</span>
             <TooltipInfo
               label={dict.transactions.tradeDateTerm}
               content={dict.tooltips.txTradeDate}
@@ -139,13 +143,13 @@ export function AddTransactionCard({ value, accountOptions, pending, onChange, o
             type="date"
             value={value.tradeDate}
             onChange={(event) => setField("tradeDate", event.target.value)}
-            className="h-10 w-full rounded-md border border-line bg-[#fffaf1] px-3"
+            className="h-10 min-w-0 w-full max-w-full rounded-md border border-line bg-[#fffaf1] px-3"
           />
         </label>
 
-        <label className="space-y-1 text-sm">
-          <span className="flex items-center gap-1 text-xs uppercase tracking-[0.08em] text-muted">
-            {dict.transactions.dayTradeTerm}
+        <label className="min-w-0 space-y-1 text-sm">
+          <span className="flex min-w-0 flex-wrap items-center gap-1 text-xs uppercase tracking-[0.08em] text-muted">
+            <span className="min-w-0">{dict.transactions.dayTradeTerm}</span>
             <TooltipInfo
               label={dict.transactions.dayTradeTerm}
               content={dict.tooltips.txDayTrade}
@@ -156,7 +160,7 @@ export function AddTransactionCard({ value, accountOptions, pending, onChange, o
           <select
             value={value.isDayTrade ? "yes" : "no"}
             onChange={(event) => setField("isDayTrade", event.target.value === "yes")}
-            className="h-10 w-full rounded-md border border-line bg-[#fffaf1] px-3"
+            className="h-10 min-w-0 w-full max-w-full rounded-md border border-line bg-[#fffaf1] px-3"
           >
             <option value="no">{dict.transactions.dayTradeNo}</option>
             <option value="yes">{dict.transactions.dayTradeYes}</option>
@@ -164,8 +168,8 @@ export function AddTransactionCard({ value, accountOptions, pending, onChange, o
         </label>
       </div>
 
-      <div className="mt-5 flex justify-end">
-        <Button onClick={() => onSubmit()} disabled={pending} data-testid="tx-submit-button">
+      <div className="mt-5 flex min-w-0 justify-end">
+        <Button onClick={() => onSubmit()} disabled={pending} data-testid="tx-submit-button" className="w-full sm:w-auto whitespace-normal text-center">
           {pending ? dict.actions.submitting : dict.actions.submitTransaction}
         </Button>
       </div>

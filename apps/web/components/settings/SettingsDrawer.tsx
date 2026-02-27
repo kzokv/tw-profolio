@@ -323,11 +323,11 @@ export function SettingsDrawer({
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-[#281f14]/35 backdrop-blur-sm data-[state=open]:animate-fade-in-up" />
         <Dialog.Content
-          className="fixed inset-y-0 right-0 z-50 flex w-full max-w-3xl flex-col border-l border-line bg-surface p-6 shadow-2xl focus:outline-none"
+          className="fixed inset-y-0 right-0 z-50 flex w-full max-w-3xl flex-col border-l border-line bg-surface p-4 shadow-2xl focus:outline-none sm:p-6"
           data-testid="settings-drawer"
         >
-          <div className="mb-5 flex items-start justify-between">
-            <div>
+          <div className="mb-5 flex min-w-0 items-start justify-between gap-2">
+            <div className="min-w-0">
               <Dialog.Title className="text-2xl text-ink">{dict.settings.title}</Dialog.Title>
               <Dialog.Description className="mt-1 text-sm text-muted">{dict.settings.description}</Dialog.Description>
             </div>
@@ -339,7 +339,7 @@ export function SettingsDrawer({
           {!draft ? (
             <p className="text-sm text-muted">{dict.feedback.loadingSettings}</p>
           ) : (
-            <form className="flex h-full flex-col" onSubmit={handleSubmit}>
+            <form className="flex min-h-0 flex-1 flex-col" onSubmit={handleSubmit}>
               <div className="mb-4 flex gap-2">
                 <Button
                   type="button"
@@ -359,7 +359,8 @@ export function SettingsDrawer({
                 </Button>
               </div>
 
-              <div className="flex-1 space-y-5 overflow-y-auto pr-1">
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <div className="flex-1 space-y-5 overflow-y-auto pr-1" data-testid="settings-content-scroll">
                 {tab === "general" && (
                   <>
                     <label className="block space-y-1">
@@ -720,11 +721,15 @@ export function SettingsDrawer({
                     </section>
                   </>
                 )}
+                </div>
               </div>
 
-              <div className="mt-4 space-y-3 border-t border-line pt-4">
+              <div className="mt-4 shrink-0 space-y-3 border-t border-line pt-4">
                 {showCloseWarning && (
-                  <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+                  <div
+                    className="rounded-md border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-900"
+                    data-testid="settings-close-warning"
+                  >
                     <div className="mb-2 flex items-start gap-2">
                       <AlertTriangle className="mt-0.5 h-4 w-4" />
                       <p>{dict.settings.closeWarning}</p>
@@ -778,7 +783,7 @@ export function SettingsDrawer({
                   <Button type="button" variant="secondary" disabled={isSaving} onClick={() => handleOpenChange(false)}>
                     {dict.actions.cancel}
                   </Button>
-                  <Button type="submit" disabled={isSaving} data-testid="settings-save-button">
+                  <Button type="submit" disabled={isSaving || !isDirty} data-testid="settings-save-button">
                     {isSaving ? dict.actions.savingSettings : dict.actions.saveSettings}
                   </Button>
                 </div>

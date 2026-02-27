@@ -17,10 +17,18 @@
   box-sizing: border-box;
 }
 
+html {
+  overflow-x: hidden;
+}
+
 html,
 body {
   margin: 0;
   min-height: 100%;
+}
+
+body {
+  overflow-x: hidden;
 }
 
 body {
@@ -74,12 +82,13 @@ h4 {
 }
 
 /* Loading progress bar – top-of-page indicator during initial load */
+/* Recommended minimum visible time for progress bar: 450ms (see LoadingProgressBar.tsx) */
 .loading-progress {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  height: 3px;
+  height: 4px;
   z-index: 1000;
   background: var(--line);
   overflow: hidden;
@@ -94,5 +103,112 @@ h4 {
 @media (prefers-reduced-motion: reduce) {
   .loading-progress__bar {
     transition: width 0.01ms linear;
+  }
+}
+
+/* Dashboard loading – in-content progress bar (energetic, in-progress feel) */
+.dashboard-loading-bar {
+  height: 4px;
+  margin-bottom: 1.5rem;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.dashboard-loading-bar::after {
+  content: "";
+  display: block;
+  height: 100%;
+  width: 40%;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .dashboard-loading-bar::after {
+    animation: dashboard-loading-shimmer 1.2s ease-in-out infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-loading-bar::after {
+    opacity: 0.7;
+  }
+}
+
+@keyframes dashboard-loading-shimmer {
+  0% { transform: translateX(-100%); }
+  50% { transform: translateX(250%); }
+  100% { transform: translateX(-100%); }
+}
+
+/* Skeleton placeholders – shimmer for perceived progress */
+.dashboard-skeleton-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.dashboard-skeleton-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    transparent 40%,
+    rgba(196, 149, 56, 0.08) 50%,
+    transparent 60%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+}
+
+.dashboard-skeleton-card--delay-1::before { background-position: 20% 0; }
+.dashboard-skeleton-card--delay-2::before { background-position: 40% 0; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .dashboard-skeleton-card::before {
+    animation: skeleton-shimmer 1.8s ease-in-out infinite;
+  }
+  .dashboard-skeleton-card--delay-1::before { animation-delay: 0.2s; }
+  .dashboard-skeleton-card--delay-2::before { animation-delay: 0.4s; }
+}
+
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.skeleton-line {
+  position: relative;
+  background: var(--line);
+}
+
+.skeleton-line::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(196, 149, 56, 0.12) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .skeleton-line::after {
+    animation: skeleton-shimmer 2s ease-in-out infinite;
+  }
+  .skeleton-line--delay::after {
+    animation-delay: 0.15s;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-line {
+    opacity: 0.85;
   }
 }
