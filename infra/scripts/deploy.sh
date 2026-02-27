@@ -74,6 +74,35 @@ collect_container_logs() {
   log "Container logs: $CONTAINER_LOG_DIR/"
 }
 
+collect_compose_failure_diagnostics() {
+  local reason="$1"
+  local diag_dir="$DEPLOY_LOG_DIR/deploy_${DEPLOY_TS}_compose_failure"
+  local services="twp-prod-postgres twp-prod-redis twp-prod-migrate twp-prod-api twp-prod-web twp-prod-cloudflared"
+
+  mkdir -p "$diag_dir"
+  log "Collecting compose diagnostics (${reason})..."
+
+  dc ps > "$diag_dir/compose_ps.txt" 2>&1 || true
+  dc ps -a > "$diag_dir/compose_ps_a.txt" 2>&1 || true
+
+  for svc in $services; do
+    if ! docker ps -a --format '{{.Names}}' | grep -q "^${svc}$"; then
+      continue
+    fi
+
+    docker inspect "$svc" > "$diag_dir/${svc}.inspect.json" 2>&1 || true
+    state="$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}} {{.State.ExitCode}} {{.State.Error}}' "$svc" 2>/dev/null || true)"
+    echo "$state" > "$diag_dir/${svc}.state.txt"
+
+    # Persist higher-volume logs when service is not healthy/running.
+    if [[ "$state" != running* ]] || [[ "$state" == *"unhealthy"* ]] || [[ "$state" == exited* ]]; then
+      docker logs "$svc" --tail 500 > "$diag_dir/${svc}.log" 2>&1 || true
+    fi
+  done
+
+  log "Compose diagnostics: $diag_dir/"
+}
+
 dc() {
   docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
 }
@@ -360,7 +389,13 @@ phase_done
 # ── Phase 5: Deploy ─────────────────────────────────────────────
 
 phase_start "Deploy services"
-dc up -d --remove-orphans
+if ! dc up -d --remove-orphans; then
+  log "ERROR: docker compose up failed — collecting diagnostics and rolling back"
+  collect_compose_failure_diagnostics "compose up failed"
+  collect_container_logs
+  rollback
+  exit 1
+fi
 phase_done
 
 # ── Phase 6: Health checks ──────────────────────────────────────
