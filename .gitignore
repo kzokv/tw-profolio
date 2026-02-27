@@ -2,6 +2,9 @@ node_modules
 npm-debug.log*
 .env
 .env.local
+.env.ok
+.env.prod
+infra/docker/.env.prod
 .next
 dist
 coverage
