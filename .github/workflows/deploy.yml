@@ -4,7 +4,7 @@ on:
   workflow_run:
     workflows: [CI]
     types: [completed]
-    branches: [main]
+    branches: [main, feature/home-lab-pro-deploy-poc]
 
 concurrency:
   group: deploy-production
@@ -29,18 +29,23 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           mkdir -p ~/.ssh
           echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
-          cat >> ~/.ssh/config <<EOF
-          Host deploy-target
-            HostName $DEPLOY_HOST
-            User $DEPLOY_USER
-            IdentityFile ~/.ssh/deploy_key
-            StrictHostKeyChecking no
-            ProxyCommand cloudflared access ssh --hostname %h --id $CF_ACCESS_CLIENT_ID --secret $CF_ACCESS_CLIENT_SECRET
-          EOF
+          printf '%s\n' \
+            "Host deploy-target" \
+            "  HostName $DEPLOY_HOST" \
+            "  User $DEPLOY_USER" \
+            "  IdentityFile ~/.ssh/deploy_key" \
+            "  StrictHostKeyChecking accept-new" \
+            "  ProxyCommand cloudflared access ssh --hostname %h --id $CF_ACCESS_CLIENT_ID --secret $CF_ACCESS_CLIENT_SECRET" \
+            >> ~/.ssh/config
 
-          ssh deploy-target "cd $DEPLOY_PATH && bash infra/scripts/deploy.sh"
+          ssh deploy-target "cd $DEPLOY_PATH && bash infra/scripts/deploy.sh $DEPLOY_SHA"
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

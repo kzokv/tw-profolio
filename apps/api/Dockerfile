@@ -19,6 +19,7 @@ RUN npm run build -w @tw-portfolio/domain \
 
 FROM node:22-alpine
 
+RUN addgroup -S app && adduser -S app -G app
 WORKDIR /app
 
 COPY --from=build /app/package.json /app/package-lock.json ./
@@ -32,6 +33,9 @@ COPY --from=build /app/apps/api/dist/ apps/api/dist/
 COPY --from=build /app/libs/domain/dist/ libs/domain/dist/
 COPY --from=build /app/libs/shared-types/dist/ libs/shared-types/dist/
 COPY db/migrations/ db/migrations/
+
+RUN chown -R app:app /app
+USER app
 
 ENV NODE_ENV=production
 EXPOSE 4000
