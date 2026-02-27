@@ -19,12 +19,19 @@ RUN npm run build -w @tw-portfolio/web
 
 FROM node:22-alpine
 
+RUN addgroup -S app && adduser -S app -G app
 WORKDIR /app
 
 COPY --from=build /app/apps/web/.next/standalone ./
 COPY --from=build /app/apps/web/.next/static apps/web/.next/static
 
+RUN chown -R app:app /app
+USER app
+
 ENV NODE_ENV=production
 EXPOSE 3000
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget -qO- http://localhost:3000/ || exit 1
 
 CMD ["node", "apps/web/server.js"]
