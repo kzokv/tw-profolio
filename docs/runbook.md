@@ -35,7 +35,7 @@
 
 - **QNAP**: `192.168.2.10` (QTS 5.2.8, x86_64)
 - **Deployment orchestrator**: `ubuntu-sshd` container at `192.168.2.61`
-- **App network**: Docker bridge `tw-prod-net`
+- **App network**: Docker bridge `twp-prod-net`
 - **External access**: Cloudflare Tunnel
   - Web: `https://twp-web.kzokvdevs.dpdns.org`
   - API: `https://twp-api.kzokvdevs.dpdns.org`
@@ -57,17 +57,17 @@ If the host has less than 8 GB RAM, reduce the per-container limits in
 
 | Container           | Image                        | Port  |
 |---------------------|------------------------------|-------|
-| `tw-prod-web`       | `tw-prod-web:latest`         | 3000  |
-| `tw-prod-api`       | `tw-prod-api:latest`         | 4000  |
-| `tw-prod-postgres`  | `postgres:16`                | 5432  |
-| `tw-prod-redis`     | `redis:7`                    | 6379  |
-| `tw-prod-cloudflared` | `cloudflare/cloudflared`   | --    |
+| `twp-prod-web`       | `twp-prod-web:latest`         | 3000  |
+| `twp-prod-api`       | `twp-prod-api:latest`         | 4000  |
+| `twp-prod-postgres`  | `postgres:16`                | 5432  |
+| `twp-prod-redis`     | `redis:7`                    | 6379  |
+| `twp-prod-cloudflared` | `cloudflare/cloudflared`   | --    |
 
 ### First-time setup
 
 1. Clone the repo on the QNAP (inside `ubuntu-sshd` data mount):
    ```bash
-   cd /data && git clone <repo-url> tw-portfolio
+   cd ~ && git clone <repo-url> tw-portfolio
    ```
 
 2. Create the production env file:
@@ -95,7 +95,7 @@ Automated via GitHub Actions on push to `main`. The pipeline:
 Manual deploy:
 ```bash
 ssh ubuntu@192.168.2.61
-cd /data/tw-portfolio
+cd ~/tw-portfolio
 bash infra/scripts/deploy.sh
 ```
 
@@ -104,14 +104,29 @@ bash infra/scripts/deploy.sh
 - **Liveness**: `GET /health/live` -> `{ "status": "ok" }`
 - **Readiness**: `GET /health/ready` -> `{ "status": "ready", "dependencies": { "postgres": true, "redis": true } }`
 
-### Checking logs
+### Deploy logs
+
+Each deploy writes a timestamped log and collects container snapshots:
+```
+~/.local/state/tw-portfolio/logs/deploy/
+  deploy_20260227_143022.log                  # full deploy stdout+stderr
+  deploy_20260227_143022_containers/          # per-container log snapshots
+    twp-prod-api.log
+    twp-prod-web.log
+    twp-prod-postgres.log
+    ...
+```
+Logs older than 30 days are pruned automatically. Override the directory with
+`DEPLOY_LOG_DIR` or set `TWP_STATE_DIR` as the base directory.
+
+### Checking container logs
 
 ```bash
-docker logs tw-prod-api --tail 100 -f
-docker logs tw-prod-web --tail 100 -f
-docker logs tw-prod-postgres --tail 50
-docker logs tw-prod-redis --tail 50
-docker logs tw-prod-cloudflared --tail 50
+docker logs twp-prod-api --tail 100 -f
+docker logs twp-prod-web --tail 100 -f
+docker logs twp-prod-postgres --tail 50
+docker logs twp-prod-redis --tail 50
+docker logs twp-prod-cloudflared --tail 50
 ```
 
 ### Rollback
@@ -123,7 +138,7 @@ The rollback block uses `set +e` so partial failures don't abort the recovery.
 
 **Manual rollback**:
 ```bash
-cd /data/tw-portfolio
+cd ~/tw-portfolio
 git log --oneline -5          # find the commit to roll back to
 bash infra/scripts/deploy.sh <commit-sha>
 ```
@@ -131,10 +146,15 @@ bash infra/scripts/deploy.sh <commit-sha>
 **Database migration rollback**: Migrations are NOT automatically reversed by
 a code rollback. The deploy script takes a Postgres backup before every
 migration and attempts to restore it during automatic rollback. If automatic
-DB restore fails, manually restore from `/data/backups/tw-portfolio/`:
+DB restore fails, manually restore from `~/.local/state/tw-portfolio/backups/`:
 ```bash
-gunzip -c /data/backups/tw-portfolio/<latest>.sql.gz | docker exec -i tw-prod-postgres psql -U twp -d tw_portfolio
+gunzip -c ~/.local/state/tw-portfolio/backups/<latest>.sql.gz | docker exec -i twp-prod-postgres psql -U twp -d tw_portfolio
 ```
+
+**Migration runner**: Migrations are executed inside a purpose-built Docker image
+(`db/Dockerfile.migrate`) that bakes SQL files in at build time. The runner script
+(`infra/scripts/run-migrations.sh`) applies files in sorted order with
+`ON_ERROR_STOP=1` and stops on first failure.
 
 **Migration contract**: All `.sql` files in `db/migrations/` must be idempotent
 (use `IF NOT EXISTS`, `IF EXISTS` guards). Non-idempotent schema changes require
@@ -148,7 +168,7 @@ bash infra/scripts/backup-postgres.sh
 
 Or manually:
 ```bash
-docker exec tw-prod-postgres pg_dump -U twp tw_portfolio > /data/backups/tw_portfolio_$(date +%Y%m%d_%H%M%S).sql
+docker exec twp-prod-postgres pg_dump -U twp tw_portfolio > ~/.local/state/tw-portfolio/backups/tw_portfolio_$(date +%Y%m%d_%H%M%S).sql
 ```
 
 ### Expected downtime during deploy
@@ -163,7 +183,7 @@ re-establishes. This is acceptable for a home-lab deployment.
   terminates at Cloudflare's edge; the tunnel itself uses an authenticated
   encrypted connection to the `cloudflared` container.
 - **Internal traffic is unencrypted**: Communication between containers on the
-  `tw-prod-net` Docker bridge network (web -> api, api -> postgres, api -> redis)
+  `twp-prod-net` Docker bridge network (web -> api, api -> postgres, api -> redis)
   uses plaintext protocols. This is acceptable because the bridge network is
   isolated to the Docker host and not routable from the LAN.
 - **Postgres**: No `sslmode` -- relies on Docker network isolation.

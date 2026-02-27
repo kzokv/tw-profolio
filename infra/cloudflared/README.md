@@ -7,8 +7,8 @@ Configure the tunnel routes in the Cloudflare Zero Trust dashboard:
 
 | Public hostname                    | Service                        |
 |------------------------------------|--------------------------------|
-| `twp-web.kzokvdevs.dpdns.org`     | `http://tw-prod-web:3000`      |
-| `twp-api.kzokvdevs.dpdns.org`     | `http://tw-prod-api:4000`      |
+| `twp-web.kzokvdevs.dpdns.org`     | `http://twp-prod-web:3000`      |
+| `twp-api.kzokvdevs.dpdns.org`     | `http://twp-prod-api:4000`      |
 
 ## Steps
 
