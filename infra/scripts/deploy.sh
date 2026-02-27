@@ -17,6 +17,69 @@ BRANCH_SPECIFIED=false
 SELECT_BRANCH=false
 FORCE=false
 
+DEPLOY_TS="$(date +%Y%m%d_%H%M%S)"
+STATE_BASE_DIR=""
+DEPLOY_LOG_DIR=""
+BACKUP_DIR=""
+LEGACY_BACKUP_DIR="${LEGACY_BACKUP_DIR:-/data/backups/tw-portfolio}"
+DEPLOY_LOG_FILE=""
+CONTAINER_LOG_DIR=""
+DEPLOY_START_EPOCH=""
+PHASE_START_EPOCH=""
+IMAGE_TAG=""
+
+# ── Logging ──────────────────────────────────────────────────────
+
+log() {
+  echo "[$(date '+%H:%M:%S')] $*"
+}
+
+log_phase() {
+  echo ""
+  log "── $* ──────────────────────────────────"
+}
+
+phase_start() {
+  PHASE_START_EPOCH=$(date +%s)
+  log_phase "$*"
+}
+
+phase_done() {
+  local elapsed=$(( $(date +%s) - PHASE_START_EPOCH ))
+  log "  done (${elapsed}s)"
+}
+
+setup_deploy_log() {
+  if ! mkdir -p "$DEPLOY_LOG_DIR"; then
+    echo "ERROR: Cannot create DEPLOY_LOG_DIR at '$DEPLOY_LOG_DIR'" >&2
+    echo "Set DEPLOY_LOG_DIR or TWP_STATE_DIR to a writable path." >&2
+    exit 1
+  fi
+  DEPLOY_LOG_FILE="$DEPLOY_LOG_DIR/deploy_${DEPLOY_TS}.log"
+  CONTAINER_LOG_DIR="$DEPLOY_LOG_DIR/deploy_${DEPLOY_TS}_containers"
+  exec > >(tee -a "$DEPLOY_LOG_FILE") 2>&1
+  log "Deploy log: $DEPLOY_LOG_FILE"
+  find "$DEPLOY_LOG_DIR" -maxdepth 1 -name "deploy_*.log" -mtime +30 -delete 2>/dev/null || true
+  find "$DEPLOY_LOG_DIR" -maxdepth 1 -name "deploy_*_containers" -type d -mtime +30 -exec rm -rf {} + 2>/dev/null || true
+}
+
+collect_container_logs() {
+  mkdir -p "$CONTAINER_LOG_DIR"
+  local containers="twp-prod-api twp-prod-web twp-prod-postgres twp-prod-redis twp-prod-cloudflared"
+  for c in $containers; do
+    if docker ps -a --format '{{.Names}}' | grep -q "^${c}$"; then
+      docker logs "$c" --tail 200 > "$CONTAINER_LOG_DIR/${c}.log" 2>&1 || true
+    fi
+  done
+  log "Container logs: $CONTAINER_LOG_DIR/"
+}
+
+dc() {
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
+}
+
+# ── Help / args ──────────────────────────────────────────────────
+
 print_help() {
   cat <<EOF
 Description:
@@ -94,6 +157,8 @@ parse_args() {
   done
 }
 
+# ── Branch selection ─────────────────────────────────────────────
+
 select_deploy_branch() {
   if [ ! -t 0 ]; then
     error_and_help "--select-branch requires an interactive terminal"
@@ -154,36 +219,70 @@ select_deploy_branch() {
   fi
 }
 
+# ── Git checkout ─────────────────────────────────────────────────
+
 checkout_deploy_ref() {
   local branch="$1"
   local sha="$2"
   local remote="$3"
 
-  echo "==> Pulling latest code for branch '$branch' (remote: $remote)..."
+  log "Pulling latest for '$branch' (remote: $remote)..."
   git fetch "$remote" "$branch"
 
   if git show-ref --verify --quiet "refs/heads/$branch"; then
     git checkout "$branch"
   elif git show-ref --verify --quiet "refs/remotes/$remote/$branch"; then
-    echo "  Local branch '$branch' missing; creating tracking branch from $remote/$branch"
+    log "Local branch '$branch' missing; creating from $remote/$branch"
     git checkout -b "$branch" "$remote/$branch"
   else
-    echo "ERROR: Branch '$branch' not found locally or on $remote." >&2
+    log "ERROR: Branch '$branch' not found locally or on $remote."
     exit 1
   fi
 
   if [ -n "$sha" ]; then
-    echo "  Validating that $sha is reachable from $remote/$branch..."
+    log "Validating $sha is reachable from $remote/$branch..."
     if ! git merge-base --is-ancestor "$sha" "$remote/$branch"; then
-      echo "ERROR: SHA $sha is not an ancestor of $remote/$branch" >&2
+      log "ERROR: SHA $sha is not an ancestor of $remote/$branch"
       exit 1
     fi
-    echo "  Advancing $branch to CI-tested SHA: $sha"
+    log "Advancing $branch to CI-tested SHA: $sha"
     git reset --hard "$sha"
   else
     git pull --ff-only "$remote" "$branch"
   fi
 }
+
+# ── Rollback ─────────────────────────────────────────────────────
+
+rollback() {
+  log_phase "ROLLBACK: restoring previous state (branch: ${PREVIOUS_BRANCH:-detached}, sha: ${PREVIOUS_SHA:-unknown})"
+  set +e
+
+  if [ -n "$PREVIOUS_BRANCH" ]; then
+    git checkout "$PREVIOUS_BRANCH"
+  fi
+  git reset --hard "$PREVIOUS_SHA"
+
+  dc --profile migrate build
+  if docker ps --format '{{.Names}}' | grep -q '^twp-prod-postgres$'; then
+    LATEST_BACKUP="$(ls -t "${BACKUP_DIR}"/*.sql.gz 2>/dev/null | head -1)"
+    if [ -z "$LATEST_BACKUP" ]; then
+      LATEST_BACKUP="$(ls -t "${LEGACY_BACKUP_DIR}"/*.sql.gz 2>/dev/null | head -1)"
+    fi
+    if [ -n "$LATEST_BACKUP" ]; then
+      log "Restoring database from $LATEST_BACKUP..."
+      gunzip -c "$LATEST_BACKUP" | docker exec -i twp-prod-postgres psql -U "${POSTGRES_USER:-twp}" -d "${POSTGRES_DB:-tw_portfolio}" 2>/dev/null \
+        || log "WARNING: DB restore failed — manual restore may be needed"
+    else
+      log "WARNING: No backup found for DB restore — schema may be inconsistent"
+    fi
+  fi
+
+  dc up -d --remove-orphans
+  set -e
+}
+
+# ── Main ─────────────────────────────────────────────────────────
 
 parse_args "$@"
 
@@ -194,6 +293,12 @@ fi
 
 set -a; source "$ENV_FILE"; set +a
 
+DEFAULT_HOME="${HOME:-$REPO_ROOT}"
+STATE_BASE_DIR="${TWP_STATE_DIR:-$DEFAULT_HOME/.local/state/tw-portfolio}"
+DEPLOY_LOG_DIR="${DEPLOY_LOG_DIR:-$STATE_BASE_DIR/logs/deploy}"
+BACKUP_DIR="${BACKUP_DIR:-$STATE_BASE_DIR/backups}"
+export DEPLOY_LOG_DIR BACKUP_DIR
+
 cd "$REPO_ROOT"
 if [ "$SELECT_BRANCH" = true ] && [ "$BRANCH_SPECIFIED" = true ]; then
   error_and_help "Use either --branch or --select-branch, not both"
@@ -201,39 +306,72 @@ fi
 if [ "$FORCE" != true ] && [ -n "$(git status --porcelain)" ]; then
   error_and_help "Working tree is not clean; commit, stash, or rerun with --force to proceed (uncommitted changes may be lost)"
 fi
+
+setup_deploy_log
+DEPLOY_START_EPOCH=$(date +%s)
+
 if [ "$SELECT_BRANCH" = true ]; then
   select_deploy_branch
 fi
+
+log "Deploy started by $(whoami)@$(hostname)"
+log "Branch: $BRANCH_NAME | Remote: $BRANCH_REMOTE | SHA arg: ${DEPLOY_SHA:-HEAD}"
+
 PREVIOUS_BRANCH="$(git symbolic-ref --quiet --short HEAD || true)"
 PREVIOUS_SHA="$(git rev-parse HEAD)"
 
+# ── Phase 1: Checkout ────────────────────────────────────────────
+
+phase_start "Checkout"
 checkout_deploy_ref "$BRANCH_NAME" "$DEPLOY_SHA" "$BRANCH_REMOTE"
-
 IMAGE_TAG="$(git rev-parse --short HEAD)"
+log "Deploy SHA: $(git rev-parse HEAD) (tag: $IMAGE_TAG)"
+phase_done
 
-echo "==> Building images (tag: $IMAGE_TAG)..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build
-docker tag tw-prod-api:latest "tw-prod-api:$IMAGE_TAG"
-docker tag tw-prod-web:latest "tw-prod-web:$IMAGE_TAG"
+# ── Phase 2: Build ───────────────────────────────────────────────
 
-echo "==> Backing up database before migration..."
-if docker ps --format '{{.Names}}' | grep -q '^tw-prod-postgres$'; then
+phase_start "Build images (tag: $IMAGE_TAG)"
+dc --profile migrate build
+docker tag twp-prod-api:latest "twp-prod-api:$IMAGE_TAG"
+docker tag twp-prod-web:latest "twp-prod-web:$IMAGE_TAG"
+phase_done
+
+# ── Phase 3: Pre-migration backup ───────────────────────────────
+
+phase_start "Pre-migration database backup"
+if docker ps --format '{{.Names}}' | grep -q '^twp-prod-postgres$'; then
   bash "$BACKUP_SCRIPT"
 else
-  echo "  Postgres not running; skipping pre-migration backup."
+  log "Postgres not running; skipping pre-migration backup"
 fi
+phase_done
 
-echo "==> Running database migrations..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" run --rm tw-prod-migrate
+# ── Phase 4: Migrate ────────────────────────────────────────────
 
-echo "==> Deploying services..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --remove-orphans
+phase_start "Database migrations"
+if ! dc --profile migrate run --rm twp-prod-migrate; then
+  log "ERROR: Migration failed — triggering rollback"
+  collect_container_logs
+  rollback
+  exit 1
+fi
+phase_done
 
-echo "==> Waiting for API health..."
+# ── Phase 5: Deploy ─────────────────────────────────────────────
+
+phase_start "Deploy services"
+dc up -d --remove-orphans
+phase_done
+
+# ── Phase 6: Health checks ──────────────────────────────────────
+
+phase_start "Health checks"
+
 API_HEALTHY=false
+log "Waiting for API health (up to 30s)..."
 for i in $(seq 1 30); do
-  if docker exec tw-prod-api wget -qO- http://localhost:4000/health/live 2>/dev/null | grep -q '"ok"'; then
-    echo "  API healthy after ${i}s"
+  if docker exec twp-prod-api wget -qO- http://localhost:4000/health/live 2>/dev/null | grep -q '"ok"'; then
+    log "  API healthy after ${i}s"
     API_HEALTHY=true
     break
   fi
@@ -241,15 +379,15 @@ for i in $(seq 1 30); do
 done
 
 if [ "$API_HEALTHY" = false ]; then
-  echo "ERROR: API failed health check after 30s" >&2
-  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" logs --tail 50 tw-prod-api
+  log "ERROR: API failed health check after 30s"
+  dc logs --tail 50 twp-prod-api
 fi
 
-echo "==> Checking web health..."
 WEB_HEALTHY=false
+log "Waiting for Web health (up to 20s)..."
 for i in $(seq 1 20); do
-  if docker exec tw-prod-web wget -qO- http://localhost:3000/ 2>/dev/null | head -c 1 | grep -q '.'; then
-    echo "  Web healthy after ${i}s"
+  if docker exec twp-prod-web wget -qO- http://localhost:3000/ 2>/dev/null | head -c 1 | grep -q '.'; then
+    log "  Web healthy after ${i}s"
     WEB_HEALTHY=true
     break
   fi
@@ -257,35 +395,38 @@ for i in $(seq 1 20); do
 done
 
 if [ "$WEB_HEALTHY" = false ]; then
-  echo "ERROR: Web failed health check after 20s" >&2
-  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" logs --tail 50 tw-prod-web
+  log "ERROR: Web failed health check after 20s"
+  dc logs --tail 50 twp-prod-web
 fi
 
+phase_done
+
+# ── Collect container logs ───────────────────────────────────────
+
+collect_container_logs
+
+# ── Rollback or success ─────────────────────────────────────────
+
 if [ "$API_HEALTHY" = false ] || [ "$WEB_HEALTHY" = false ]; then
-  echo "==> Rolling back to previous state (branch: ${PREVIOUS_BRANCH:-detached}, sha: $PREVIOUS_SHA)..."
-  set +e
-  if [ -n "$PREVIOUS_BRANCH" ]; then
-    git checkout "$PREVIOUS_BRANCH"
-  fi
-  git reset --hard "$PREVIOUS_SHA"
-  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build
-  if docker ps --format '{{.Names}}' | grep -q '^tw-prod-postgres$'; then
-    LATEST_BACKUP="$(ls -t "${BACKUP_DIR:-/data/backups/tw-portfolio}"/*.sql.gz 2>/dev/null | head -1)"
-    if [ -n "$LATEST_BACKUP" ]; then
-      echo "  Restoring database from $LATEST_BACKUP..."
-      gunzip -c "$LATEST_BACKUP" | docker exec -i tw-prod-postgres psql -U "${POSTGRES_USER:-twp}" -d "${POSTGRES_DB:-tw_portfolio}" 2>/dev/null || echo "  WARNING: DB restore failed — manual restore may be needed"
-    else
-      echo "  WARNING: No backup found for DB restore — schema may be inconsistent"
-    fi
-  fi
-  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --remove-orphans
-  set -e
+  rollback
   exit 1
 fi
 
-echo "==> Pruning old tw-portfolio images..."
-docker images --filter "reference=tw-prod-api" --filter "before=tw-prod-api:$IMAGE_TAG" -q | xargs -r docker rmi 2>/dev/null || true
-docker images --filter "reference=tw-prod-web" --filter "before=tw-prod-web:$IMAGE_TAG" -q | xargs -r docker rmi 2>/dev/null || true
+# ── Phase 7: Cleanup ────────────────────────────────────────────
 
-echo "==> Deploy complete (tag: $IMAGE_TAG)."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" ps
+phase_start "Cleanup"
+docker images --filter "reference=twp-prod-api" --filter "before=twp-prod-api:$IMAGE_TAG" -q | xargs -r docker rmi 2>/dev/null || true
+docker images --filter "reference=twp-prod-web" --filter "before=twp-prod-web:$IMAGE_TAG" -q | xargs -r docker rmi 2>/dev/null || true
+phase_done
+
+# ── Summary ──────────────────────────────────────────────────────
+
+DEPLOY_ELAPSED=$(( $(date +%s) - DEPLOY_START_EPOCH ))
+log_phase "Deploy complete"
+log "Tag:      $IMAGE_TAG"
+log "Branch:   $BRANCH_NAME"
+log "SHA:      $(git rev-parse HEAD)"
+log "Duration: ${DEPLOY_ELAPSED}s"
+log "Log:      $DEPLOY_LOG_FILE"
+echo ""
+dc ps
