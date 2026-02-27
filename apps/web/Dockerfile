@@ -14,6 +14,8 @@ COPY apps/web/ apps/web/
 
 ARG NEXT_PUBLIC_API_BASE_URL
 ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
+ARG NEXT_PUBLIC_AUTH_USER_ID
+ENV NEXT_PUBLIC_AUTH_USER_ID=${NEXT_PUBLIC_AUTH_USER_ID}
 
 RUN npm run build -w @tw-portfolio/shared-types \
  && npm run build -w @tw-portfolio/web
