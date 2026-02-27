@@ -40,6 +40,19 @@
   - Web: `https://twp-web.kzokvdevs.dpdns.org`
   - API: `https://twp-api.kzokvdevs.dpdns.org`
 
+### Host Resource Budget
+
+The QNAP NAS provides the underlying compute. Container resource limits are set to
+stay within the host's capacity with headroom for the OS and QTS services.
+
+| Resource | Container Limits Total | Host Available (est.) | Headroom |
+|----------|----------------------|----------------------|----------|
+| Memory   | ~1,920 MB            | 8 GB                 | ~6 GB for OS/QTS |
+| vCPUs    | 3.75                 | 4 cores              | ~0.25 for OS |
+
+If the host has less than 8 GB RAM, reduce the per-container limits in
+`docker-compose.prod.yml` accordingly to avoid OOM kills.
+
 ### Containers
 
 | Container           | Image                        | Port  |
@@ -47,7 +60,7 @@
 | `tw-prod-web`       | `tw-prod-web:latest`         | 3000  |
 | `tw-prod-api`       | `tw-prod-api:latest`         | 4000  |
 | `tw-prod-postgres`  | `postgres:16`                | 5432  |
-| `twp-prod-redis`    | `redis:7`                    | 6379  |
+| `tw-prod-redis`     | `redis:7`                    | 6379  |
 | `tw-prod-cloudflared` | `cloudflare/cloudflared`   | --    |
 
 ### First-time setup
@@ -97,7 +110,7 @@ bash infra/scripts/deploy.sh
 docker logs tw-prod-api --tail 100 -f
 docker logs tw-prod-web --tail 100 -f
 docker logs tw-prod-postgres --tail 50
-docker logs twp-prod-redis --tail 50
+docker logs tw-prod-redis --tail 50
 docker logs tw-prod-cloudflared --tail 50
 ```
 
@@ -113,8 +126,26 @@ bash infra/scripts/deploy.sh
 ### Database backup
 
 ```bash
+bash infra/scripts/backup-postgres.sh
+```
+
+Or manually:
+```bash
 docker exec tw-prod-postgres pg_dump -U twp tw_portfolio > /data/backups/tw_portfolio_$(date +%Y%m%d_%H%M%S).sql
 ```
+
+### Security Assumptions
+
+- **External TLS**: All public traffic is encrypted via Cloudflare Tunnel. TLS
+  terminates at Cloudflare's edge; the tunnel itself uses an authenticated
+  encrypted connection to the `cloudflared` container.
+- **Internal traffic is unencrypted**: Communication between containers on the
+  `tw-prod-net` Docker bridge network (web -> api, api -> postgres, api -> redis)
+  uses plaintext protocols. This is acceptable because the bridge network is
+  isolated to the Docker host and not routable from the LAN.
+- **Postgres**: No `sslmode` -- relies on Docker network isolation.
+- **Redis**: Password-authenticated but no TLS -- relies on Docker network isolation.
+- If this deployment moves to a multi-host setup, internal TLS must be added.
 
 ## Settings drawer behavior
 

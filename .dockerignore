@@ -5,6 +5,7 @@ node_modules
 .env.*
 !.env.example
 *.md
-tests
+**/tests
+**/__tests__
 docs
 .github

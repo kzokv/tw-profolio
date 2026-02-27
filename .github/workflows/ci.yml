@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  lint-and-typecheck:
+  build-and-typecheck:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,6 +19,8 @@ jobs:
       - run: npm run build -w @tw-portfolio/domain
       - run: npm run build -w @tw-portfolio/shared-types
       - run: npm run build -w @tw-portfolio/api
+      - run: npx tsc --noEmit -p apps/api/tsconfig.json
+      - run: npx tsc --noEmit -p apps/web/tsconfig.json
 
   unit-tests:
     runs-on: ubuntu-latest
