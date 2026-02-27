@@ -68,6 +68,10 @@ export function AppShell() {
   const locale: LocaleCode = settings?.locale ?? "en";
   const dict = useMemo(() => getDictionary(locale), [locale]);
 
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
+
   /** Ready when we have user settings (locale). Later: set false until async i18n load completes. */
   const isI18nReady = !!settings;
   const showPageSkeleton = isBootstrapping || isRefreshing || !isI18nReady;
@@ -241,7 +245,7 @@ export function AppShell() {
   }, [refresh, setDrawerOpen]);
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen min-w-0 overflow-x-hidden">
       <TopBar
         skeleton={isBootstrapping}
         userId={settings?.userId}
@@ -252,14 +256,14 @@ export function AppShell() {
         openSettingsLabel={dict.topBar.openSettingsLabel}
       />
 
-      <main className="mx-auto w-full max-w-7xl px-4 py-6 md:px-8 md:py-8">
+      <main className="mx-auto min-w-0 w-full max-w-7xl px-4 py-6 md:px-8 md:py-8">
         {showPageSkeleton ? (
           <HeroSkeleton />
         ) : (
-          <div className="mb-6 rounded-2xl border border-line bg-surface px-5 py-4 shadow-card">
+          <div className="mb-6 min-w-0 rounded-2xl border border-line bg-surface px-5 py-4 shadow-card">
             <p className="text-xs uppercase tracking-[0.16em] text-muted">{dict.hero.eyebrow}</p>
-            <div className="mt-2 flex items-center gap-2">
-              <h2 className="text-3xl leading-none" data-testid="hero-title">
+            <div className="mt-2 flex min-w-0 items-center gap-2">
+              <h2 className="text-xl leading-tight sm:text-2xl md:text-3xl md:leading-none" data-testid="hero-title">
                 {dict.hero.title}
               </h2>
               <TooltipInfo
@@ -296,7 +300,7 @@ export function AppShell() {
         {showPageSkeleton ? (
           <DashboardLoading />
         ) : (
-          <div className="stagger grid gap-6 md:grid-cols-2">
+          <div className="stagger grid min-w-0 gap-6 md:grid-cols-2">
             <RecomputeCard settings={settings} pending={isRunningRecompute} onRecompute={handleRecompute} dict={dict} />
             <AddTransactionCard
               value={newTx}
@@ -306,7 +310,7 @@ export function AppShell() {
               onSubmit={handleSubmitTransaction}
               dict={dict}
             />
-            <div className="md:col-span-2">
+            <div className="md:col-span-2 min-w-0">
               <HoldingsTable holdings={holdings} dict={dict} locale={locale} />
             </div>
           </div>
@@ -318,7 +322,7 @@ export function AppShell() {
           <Dialog.Portal>
             <Dialog.Overlay className="fixed inset-0 z-[70] bg-black/30" />
             <Dialog.Content
-              className="fixed left-1/2 top-1/2 z-[71] w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-rose-200 bg-white p-5 shadow-2xl focus:outline-none"
+              className="fixed left-1/2 top-1/2 z-[71] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-rose-200 bg-white p-5 shadow-2xl focus:outline-none"
               data-testid="integrity-dialog"
             >
               <div className="mb-3 flex items-start gap-2 text-rose-700">

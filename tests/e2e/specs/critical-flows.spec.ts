@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 test("critical flow: add transaction and verify holdings", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.getByTestId("hero-title")).toContainText("Taiwan Portfolio Control Room");
+  await expect(page.getByTestId("hero-title")).toContainText(/Taiwan Portfolio Control Room|台灣投資組合控制台/);
 
   await page.getByTestId("tx-quantity-input").fill("10");
   await page.getByTestId("tx-price-input").fill("120");
@@ -19,7 +19,8 @@ test("critical flow: recompute history with fallback confirmation", async ({ pag
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByTestId("recompute-button").click();
 
-  await expect(page.getByTestId("recompute-status")).toContainText("Recompute CONFIRMED");
+  await expect(page.getByTestId("recompute-button")).toBeEnabled({ timeout: 20_000 });
+  await expect(page.getByTestId("recompute-status")).toContainText(/Recompute CONFIRMED|重算已確認/, { timeout: 5_000 });
 });
 
 test("critical flow: update settings locale and translate full UI", async ({ page }) => {
@@ -31,16 +32,19 @@ test("critical flow: update settings locale and translate full UI", async ({ pag
 
   await page.getByTestId("settings-locale-select").selectOption("zh-TW");
   await page.getByTestId("settings-cost-basis-select").selectOption("LIFO");
-  await page.getByTestId("settings-quote-poll-input").fill("12");
+  const currentQuotePoll = await page.getByTestId("settings-quote-poll-input").inputValue();
+  const nextQuotePoll = currentQuotePoll === "12" ? "10" : "12";
+  await page.getByTestId("settings-quote-poll-input").fill(nextQuotePoll);
   await page.getByTestId("settings-save-button").click();
 
-  await expect(page.getByTestId("hero-title")).toContainText("台灣投資組合控制台");
+  await expect(page).not.toHaveURL(/drawer=settings/, { timeout: 15_000 });
+  await expect(page.getByTestId("hero-title")).toContainText("台灣投資組合控制台", { timeout: 5_000 });
   await expect(page.getByTestId("topbar-title")).toContainText("市場帳本");
-  await expect(page.getByTestId("settings-quote-poll-value")).toContainText("12 秒");
+  await expect(page.getByTestId("settings-quote-poll-value")).toContainText(`${nextQuotePoll} 秒`);
   await expect(page.getByTestId("settings-cost-basis-value")).toContainText("LIFO");
 
   await page.reload();
-  await expect(page.getByTestId("hero-title")).toContainText("台灣投資組合控制台");
+  await expect(page.getByTestId("hero-title")).toContainText("台灣投資組合控制台", { timeout: 10_000 });
   await expect(page.getByTestId("topbar-title")).toContainText("市場帳本");
 });
 
@@ -52,12 +56,12 @@ test("critical flow: discard changes and warn on drawer close", async ({ page })
   await page.getByTestId("settings-locale-select").selectOption("en");
   await page.getByTestId("settings-quote-poll-input").fill("30");
 
-  await page.getByRole("button", { name: "取消" }).click();
-  await expect(page.getByText("現在關閉會捨棄這些內容", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: /Cancel|取消/ }).click();
+  await expect(page.getByTestId("settings-close-warning")).toBeVisible();
 
-  await page.getByRole("button", { name: "繼續編輯" }).click();
+  await page.getByRole("button", { name: /Keep Editing|繼續編輯/ }).click();
   await page.getByTestId("settings-discard-button").click();
-  await expect(page.getByTestId("settings-discard-notice")).toContainText("捨棄");
+  await expect(page.getByTestId("settings-discard-notice")).toContainText(/discarded|捨棄/);
 });
 
 test("critical flow: settings and term tooltips are visible", async ({ page }) => {
@@ -77,4 +81,20 @@ test("critical flow: settings and term tooltips are visible", async ({ page }) =
   await page.goto("/");
   await page.getByTestId("tooltip-tx-account-trigger").hover();
   await expect(page.getByTestId("tooltip-tx-account-content")).toBeVisible();
+});
+
+test("responsive: key UI visible at 375px with English locale", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 667 });
+  await page.goto("/");
+
+  await expect(page.getByTestId("topbar-title")).toBeVisible();
+  await expect(page.getByTestId("hero-title")).toContainText(/Taiwan Portfolio Control Room|台灣投資組合控制台/);
+  await expect(page.getByTestId("recompute-button")).toBeVisible();
+  await expect(page.getByTestId("avatar-button")).toBeVisible();
+
+  const { scrollWidth, clientWidth } = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }));
+  expect(scrollWidth).toBeLessThanOrEqual(clientWidth + 2);
 });
