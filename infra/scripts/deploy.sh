@@ -405,7 +405,7 @@ phase_start "Health checks"
 API_HEALTHY=false
 log "Waiting for API health (up to 30s)..."
 for i in $(seq 1 30); do
-  if docker exec twp-prod-api wget -qO- http://localhost:4000/health/live 2>/dev/null | grep -q '"ok"'; then
+  if docker exec twp-prod-api wget -qO- http://127.0.0.1:4000/health/live 2>/dev/null | grep -q '"ok"'; then
     log "  API healthy after ${i}s"
     API_HEALTHY=true
     break
@@ -421,7 +421,7 @@ fi
 WEB_HEALTHY=false
 log "Waiting for Web health (up to 20s)..."
 for i in $(seq 1 20); do
-  if docker exec twp-prod-web wget -qO- http://localhost:3000/ 2>/dev/null | head -c 1 | grep -q '.'; then
+  if docker exec twp-prod-web wget -qO- http://127.0.0.1:3000/ 2>/dev/null | head -c 1 | grep -q '.'; then
     log "  Web healthy after ${i}s"
     WEB_HEALTHY=true
     break
