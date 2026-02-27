@@ -15,7 +15,8 @@ COPY apps/web/ apps/web/
 ARG NEXT_PUBLIC_API_BASE_URL
 ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
 
-RUN npm run build -w @tw-portfolio/web
+RUN npm run build -w @tw-portfolio/shared-types \
+ && npm run build -w @tw-portfolio/web
 
 FROM node:22-alpine
 
