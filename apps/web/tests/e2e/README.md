@@ -16,7 +16,7 @@ E2E tests are owned by the web app and run against the full stack (web + API). C
 
 - **Playwright**: Installed as project devDependency (root and `apps/web`). Run `npm run onboard` or `npm run install:full` from repo root once per machine.
 - **System libs** (Linux): If Chromium fails with missing shared libraries (e.g. `libglib-2.0.so.0`), run `npx playwright install-deps` (may need `sudo`). E2E requires Playwright system dependencies; failures may indicate missing libraries.
-- **Ports**: `WEB_PORT` (default `3333`) and `API_PORT` (default `4000`) must be free. Set env vars to override.
+- **Ports**: E2E uses `WEB_PORT` (default `3333`) and `API_PORT` (default `4000`). Startup only reclaims stale repo-owned `apps/web` / `apps/api` dev servers on those ports. If another process owns a port, the run fails with the owning PID, cwd, and command instead of killing it.
 - **Build**: Ensure libs and apps are built before running E2E (or run `npm run build` from repo root).
 
 ## Coverage (vs integration)
@@ -27,7 +27,7 @@ E2E covers **user-visible behavior** and full-stack flows. It does not re-test A
 
 From **repo root** (scripts live in root package.json):
 
-- `npm run test:e2e` – Runs Playwright with config at `apps/web/tests/e2e/`. `webServer` starts API and web automatically. Generates an HTML report; opens automatically on failure.
+- `npm run test:e2e` – Runs Playwright with config at `apps/web/tests/e2e/`. `webServer` starts API and web automatically, reuses healthy existing repo servers, and fails fast on unrelated port conflicts. Generates an HTML report; opens automatically on failure.
 - `npm run test:e2e:ci` – Same, with `--reporter=junit` for CI integration.
 - `npm run test:e2e:show-report` – View the last generated HTML report (run from repo root or `apps/web`).
 - `npm run install:full` – Install npm deps + Playwright browsers + system deps (Linux; prompts for sudo if needed).

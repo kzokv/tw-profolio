@@ -1,7 +1,8 @@
 "use client";
 
+import * as Dialog from "@radix-ui/react-dialog";
 import { AlertTriangle } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type {
   AccountDto,
@@ -17,6 +18,8 @@ import { HoldingsTable } from "../portfolio/HoldingsTable";
 import { RecomputeCard } from "../portfolio/RecomputeCard";
 import type { Holding, TransactionInput } from "../portfolio/types";
 import { SettingsDrawer, type SettingsDraft } from "../settings/SettingsDrawer";
+import { DashboardLoading } from "../dashboard/DashboardLoading";
+import { HeroSkeleton } from "../dashboard/HeroSkeleton";
 import { Button } from "../ui/Button";
 import { TooltipInfo } from "../ui/TooltipInfo";
 import { TopBar } from "./TopBar";
@@ -53,6 +56,7 @@ export function AppShell() {
   const [newTx, setNewTx] = useState<TransactionInput>(DEFAULT_TRANSACTION);
 
   const [isBootstrapping, setIsBootstrapping] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSubmittingTx, setIsSubmittingTx] = useState(false);
   const [isRunningRecompute, setIsRunningRecompute] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
@@ -62,7 +66,15 @@ export function AppShell() {
   const [settingsError, setSettingsError] = useState("");
 
   const locale: LocaleCode = settings?.locale ?? "en";
-  const dict = getDictionary(locale);
+  const dict = useMemo(() => getDictionary(locale), [locale]);
+
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
+
+  /** Ready when we have user settings (locale). Later: set false until async i18n load completes. */
+  const isI18nReady = !!settings;
+  const showPageSkeleton = isBootstrapping || isRefreshing || !isI18nReady;
 
   const drawerOpen = searchParams.get("drawer") === "settings";
 
@@ -79,27 +91,32 @@ export function AppShell() {
   );
 
   const refresh = useCallback(async () => {
-    const [nextSettings, nextHoldings, nextFeeConfig] = await Promise.all([
-      getJson<UserSettings>("/settings"),
-      getJson<Holding[]>("/portfolio/holdings"),
-      getJson<FeeConfigResponse>("/settings/fee-config"),
-    ]);
+    setIsRefreshing(true);
+    try {
+      const [nextSettings, nextHoldings, nextFeeConfig] = await Promise.all([
+        getJson<UserSettings>("/settings"),
+        getJson<Holding[]>("/portfolio/holdings"),
+        getJson<FeeConfigResponse>("/settings/fee-config"),
+      ]);
 
-    setSettings(nextSettings);
-    setHoldings(nextHoldings);
-    setAccounts(nextFeeConfig.accounts);
-    setProfiles(nextFeeConfig.feeProfiles);
-    setFeeProfileBindings(nextFeeConfig.feeProfileBindings);
-    setIntegrityIssue(nextFeeConfig.integrityIssue);
-    setShowIntegrityDialog(Boolean(nextFeeConfig.integrityIssue));
+      setSettings(nextSettings);
+      setHoldings(nextHoldings);
+      setAccounts(nextFeeConfig.accounts);
+      setProfiles(nextFeeConfig.feeProfiles);
+      setFeeProfileBindings(nextFeeConfig.feeProfileBindings);
+      setIntegrityIssue(nextFeeConfig.integrityIssue);
+      setShowIntegrityDialog(Boolean(nextFeeConfig.integrityIssue));
 
-    const defaultAccountId = nextFeeConfig.accounts[0]?.id ?? "";
-    setNewTx((previous) => ({
-      ...previous,
-      accountId: nextFeeConfig.accounts.some((account) => account.id === previous.accountId)
-        ? previous.accountId
-        : defaultAccountId,
-    }));
+      const defaultAccountId = nextFeeConfig.accounts[0]?.id ?? "";
+      setNewTx((previous) => ({
+        ...previous,
+        accountId: nextFeeConfig.accounts.some((account) => account.id === previous.accountId)
+          ? previous.accountId
+          : defaultAccountId,
+      }));
+    } finally {
+      setIsRefreshing(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -123,7 +140,7 @@ export function AppShell() {
     };
   }, [refresh]);
 
-  async function handleSubmitTransaction() {
+  const handleSubmitTransaction = useCallback(async () => {
     if (!newTx.accountId) {
       setGlobalError(dict.feedback.noAccounts);
       return;
@@ -142,9 +159,9 @@ export function AppShell() {
     } finally {
       setIsSubmittingTx(false);
     }
-  }
+  }, [dict.feedback.noAccounts, newTx, refresh]);
 
-  async function handleRecompute() {
+  const handleRecompute = useCallback(async () => {
     const proceed = window.confirm(dict.recompute.fallbackConfirm);
     if (!proceed) return;
 
@@ -170,9 +187,9 @@ export function AppShell() {
     } finally {
       setIsRunningRecompute(false);
     }
-  }
+  }, [dict.recompute.fallbackConfirm, locale, refresh]);
 
-  async function handleSaveSettings(draft: SettingsDraft) {
+  const handleSaveSettings = useCallback(async (draft: SettingsDraft) => {
     setIsSavingSettings(true);
     setSettingsError("");
 
@@ -225,11 +242,12 @@ export function AppShell() {
     } finally {
       setIsSavingSettings(false);
     }
-  }
+  }, [refresh, setDrawerOpen]);
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen min-w-0 overflow-x-hidden">
       <TopBar
+        skeleton={isBootstrapping}
         userId={settings?.userId}
         onOpenSettings={() => setDrawerOpen(true)}
         productName={dict.topBar.productName}
@@ -238,42 +256,51 @@ export function AppShell() {
         openSettingsLabel={dict.topBar.openSettingsLabel}
       />
 
-      <main className="mx-auto w-full max-w-7xl px-4 py-6 md:px-8 md:py-8">
-        <div className="mb-6 rounded-2xl border border-line bg-surface px-5 py-4 shadow-card">
-          <p className="text-xs uppercase tracking-[0.16em] text-muted">{dict.hero.eyebrow}</p>
-          <div className="mt-2 flex items-center gap-2">
-            <h2 className="text-3xl leading-none" data-testid="hero-title">
-              {dict.hero.title}
-            </h2>
-            <TooltipInfo
-              label={dict.hero.title}
-              content={dict.tooltips.heroTitle}
-              triggerTestId="tooltip-hero-title-trigger"
-              contentTestId="tooltip-hero-title-content"
-            />
+      <main className="mx-auto min-w-0 w-full max-w-7xl px-4 py-6 md:px-8 md:py-8">
+        {showPageSkeleton ? (
+          <HeroSkeleton />
+        ) : (
+          <div className="mb-6 min-w-0 rounded-2xl border border-line bg-surface px-5 py-4 shadow-card">
+            <p className="text-xs uppercase tracking-[0.16em] text-muted">{dict.hero.eyebrow}</p>
+            <div className="mt-2 flex min-w-0 items-center gap-2">
+              <h2 className="text-xl leading-tight sm:text-2xl md:text-3xl md:leading-none" data-testid="hero-title">
+                {dict.hero.title}
+              </h2>
+              <TooltipInfo
+                label={dict.hero.title}
+                content={dict.tooltips.heroTitle}
+                triggerTestId="tooltip-hero-title-trigger"
+                contentTestId="tooltip-hero-title-content"
+              />
+            </div>
+            <p className="mt-2 text-sm text-muted">{dict.hero.description}</p>
           </div>
-          <p className="mt-2 text-sm text-muted">{dict.hero.description}</p>
-        </div>
-
-        {globalError && (
-          <p className="mb-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-            {dict.feedback.requestFailedPrefix}: {globalError}
-          </p>
         )}
 
-        {recomputeMessage && (
+        {globalError ? (
+          <div className="mb-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            <p>{dict.feedback.requestFailedPrefix}: {globalError}</p>
+            <div className="mt-2 flex justify-end">
+              <Button type="button" variant="secondary" size="sm" onClick={() => { setGlobalError(""); refresh(); }}>
+                {dict.actions.retry}
+              </Button>
+            </div>
+          </div>
+        ) : recomputeMessage ? (
           <p
             className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800"
             data-testid="recompute-status"
           >
             {recomputeMessage}
           </p>
-        )}
+        ) : showPageSkeleton ? (
+          <div className="mb-4 h-2 w-full rounded skeleton-line" aria-hidden="true" />
+        ) : null}
 
-        {isBootstrapping ? (
-          <p className="rounded-md border border-line bg-surface px-4 py-3 text-sm text-muted">{dict.feedback.loadingDashboard}</p>
+        {showPageSkeleton ? (
+          <DashboardLoading />
         ) : (
-          <div className="stagger grid gap-6 md:grid-cols-2">
+          <div className="stagger grid min-w-0 gap-6 md:grid-cols-2">
             <RecomputeCard settings={settings} pending={isRunningRecompute} onRecompute={handleRecompute} dict={dict} />
             <AddTransactionCard
               value={newTx}
@@ -283,42 +310,48 @@ export function AppShell() {
               onSubmit={handleSubmitTransaction}
               dict={dict}
             />
-            <div className="md:col-span-2">
+            <div className="md:col-span-2 min-w-0">
               <HoldingsTable holdings={holdings} dict={dict} locale={locale} />
             </div>
           </div>
         )}
       </main>
 
-      {integrityIssue && showIntegrityDialog && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/30 px-4">
-          <div className="w-full max-w-lg rounded-xl border border-rose-200 bg-white p-5 shadow-2xl" data-testid="integrity-dialog">
-            <div className="mb-3 flex items-start gap-2 text-rose-700">
-              <AlertTriangle className="mt-0.5 h-5 w-5" />
-              <div>
-                <p className="text-base font-semibold">{dict.dialogs.integrityTitle}</p>
-                <p className="text-sm text-rose-600">{dict.dialogs.integrityDescription}</p>
+      {integrityIssue && (
+        <Dialog.Root open={showIntegrityDialog} onOpenChange={(open) => setShowIntegrityDialog(open)}>
+          <Dialog.Portal>
+            <Dialog.Overlay className="fixed inset-0 z-[70] bg-black/30" />
+            <Dialog.Content
+              className="fixed left-1/2 top-1/2 z-[71] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-rose-200 bg-white p-5 shadow-2xl focus:outline-none"
+              data-testid="integrity-dialog"
+            >
+              <div className="mb-3 flex items-start gap-2 text-rose-700">
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+                <div>
+                  <Dialog.Title className="text-base font-semibold">{dict.dialogs.integrityTitle}</Dialog.Title>
+                  <Dialog.Description className="text-sm text-rose-600">{dict.dialogs.integrityDescription}</Dialog.Description>
+                </div>
               </div>
-            </div>
 
-            <p className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{integrityIssue.message}</p>
+              <p className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{integrityIssue.message}</p>
 
-            <div className="mt-4 flex justify-end gap-2">
-              <Button type="button" variant="secondary" onClick={() => setShowIntegrityDialog(false)}>
-                {dict.actions.dismiss}
-              </Button>
-              <Button
-                type="button"
-                onClick={() => {
-                  setShowIntegrityDialog(false);
-                  setDrawerOpen(true);
-                }}
-              >
-                {dict.actions.openSettings}
-              </Button>
-            </div>
-          </div>
-        </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <Button type="button" variant="secondary" onClick={() => setShowIntegrityDialog(false)}>
+                  {dict.actions.dismiss}
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => {
+                    setShowIntegrityDialog(false);
+                    setDrawerOpen(true);
+                  }}
+                >
+                  {dict.actions.openSettings}
+                </Button>
+              </div>
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
       )}
 
       <SettingsDrawer

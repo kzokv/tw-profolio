@@ -28,7 +28,7 @@ export function TooltipInfo({ label, content, triggerTestId, contentTestId }: To
           <Tooltip.Content
             side="top"
             sideOffset={6}
-            className="z-[60] max-w-xs rounded-md border border-line bg-surface px-3 py-2 text-xs text-ink shadow-card"
+            className="z-[60] max-w-xs break-words rounded-md border border-line bg-surface px-3 py-2 text-xs text-ink shadow-card"
             data-testid={contentTestId}
           >
             {content}

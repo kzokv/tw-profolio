@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from "react";
  * - Lightweight: two divs, requestAnimationFrame + a small interval.
  * - Hydration-safe: state starts at 0, all animations start post-mount.
  * - UX: quick ramp to ~28%, slow creep toward ~80% on long loads, then 100%.
- * - Fast loads: minimum visible duration to avoid a jarring flash.
+ * - Fast loads: minimum visible duration 450ms (recommended) to avoid a jarring flash.
  * - Cleanup: fully clears rAF, timeouts, and intervals on unmount.
  */
 export function LoadingProgressBar() {
@@ -31,7 +31,7 @@ export function LoadingProgressBar() {
     const SLOW_STEP = 4; // %
     const SLOW_INTERVAL = 600; // ms
     const SLOW_START_DELAY = 350; // ms after initial ramp end
-    const MIN_VISIBLE_MS = 300; // min time the bar should be meaningfully visible
+    const MIN_VISIBLE_MS = 450; // recommended min visible time so users see "in progress"
     const HIDE_DELAY_MS = 180; // time to stay at 100% before unmount
 
     let rampStartTime: number | null = null;
@@ -163,7 +163,7 @@ export function LoadingProgressBar() {
       aria-valuenow={Math.round(progress)}
       aria-valuemin={0}
       aria-valuemax={100}
-      aria-label="Page loading"
+      aria-label="Loading dashboard"
       aria-live="off"
     >
       <div className="loading-progress__bar" style={{ width: `${progress}%` }} />

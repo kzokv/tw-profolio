@@ -21,6 +21,10 @@ This document is the single source of truth for deploying and operating the **tw
 - API: `npm run dev -w apps/api`
 - Web: `npm run dev -w apps/web`
 
+Tip: When `next dev` can't bind to `WEB_PORT` (default `3333`), a previous instance likely still owns the port. Identify the orphaned process with `ps -ef | grep -i "next dev"` and stop it via `kill <pid>` or `pkill -f "next dev -p"`, then rerun `npm run dev -w apps/web`.
+`scripts/kill-next.sh` now clears the default web (`WEB_PORT`=3333) and API (`API_PORT`=4000) ports from `.env`. Run `./scripts/kill-next.sh` to target both, `./scripts/kill-next.sh web`/`api` for a specific service, or supply any port number directly.
+
+
 ### Build model
 
 - Workspace libraries (`@tw-portfolio/domain`, `@tw-portfolio/shared-types`) are **not** built during `npm install` / `npm ci`. Builds happen only via explicit commands.
@@ -48,7 +52,7 @@ This document is the single source of truth for deploying and operating the **tw
 
 - **Run**: From repo root, `npm run test:e2e` (or `npm run test:e2e:ci` for JUnit output).
 - **Setup**: Run `npm run onboard` or `npm run install:full` from repo root once per machine (installs npm deps, Playwright browsers, and on Linux prompts for system deps). If Chromium fails with missing shared libraries, run `npx playwright install-deps` manually (may need `sudo`).
-- **Ports**: E2E uses `WEB_PORT` (default `3333`) and `API_PORT` (default `4000`). Ensure these ports are free or set env vars to avoid conflicts with other services.
+- **Ports**: E2E uses `WEB_PORT` (default `3333`) and `API_PORT` (default `4000`). Playwright only reclaims stale repo-owned web/API dev servers on those ports. If another process owns a port, the run fails and reports the owning PID/cwd/command; stop that process or override the ports.
 - **Servers**: Playwright's `webServer` starts API and web automatically; no separate server script needed. Uses `PERSISTENCE_BACKEND=memory` and `AUTH_MODE=dev_bypass`.
 
 ---

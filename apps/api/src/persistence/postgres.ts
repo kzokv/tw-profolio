@@ -336,6 +336,15 @@ export class PostgresPersistence implements Persistence {
         }
       }
 
+      await client.query(
+        `DELETE FROM recompute_job_items
+         WHERE job_id IN (
+           SELECT id FROM recompute_jobs WHERE user_id = $1
+         )`,
+        [store.userId],
+      );
+      await client.query(`DELETE FROM recompute_jobs WHERE user_id = $1`, [store.userId]);
+
       await client.query(`DELETE FROM transactions WHERE user_id = $1`, [store.userId]);
       for (const tx of store.transactions) {
         await client.query(
@@ -407,12 +416,6 @@ export class PostgresPersistence implements Persistence {
           );
         }
       }
-
-      const jobIds = store.recomputeJobs.map((item) => item.id);
-      if (jobIds.length) {
-        await client.query(`DELETE FROM recompute_job_items WHERE job_id = ANY($1)`, [jobIds]);
-      }
-      await client.query(`DELETE FROM recompute_jobs WHERE user_id = $1`, [store.userId]);
 
       for (const job of store.recomputeJobs) {
         await client.query(

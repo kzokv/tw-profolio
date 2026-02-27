@@ -35,6 +35,7 @@ export interface AppDictionary {
     closeWithoutSaving: string;
     openSettings: string;
     dismiss: string;
+    retry: string;
   };
   settings: {
     title: string;
@@ -211,6 +212,7 @@ const en: AppDictionary = {
     closeWithoutSaving: "Close Without Saving",
     openSettings: "Open Settings",
     dismiss: "Dismiss",
+    retry: "Retry",
   },
   settings: {
     title: "Settings",
@@ -369,6 +371,7 @@ const zhTw: AppDictionary = {
     closeWithoutSaving: "直接關閉",
     openSettings: "開啟設定",
     dismiss: "關閉提示",
+    retry: "重試",
   },
   settings: {
     title: "設定",
