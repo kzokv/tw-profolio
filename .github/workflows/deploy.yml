@@ -4,7 +4,7 @@ on:
   workflow_run:
     workflows: [CI]
     types: [completed]
-    branches: [main]
+    branches: [main, feature/home-lab-pro-deploy-poc]
 
 concurrency:
   group: deploy-production

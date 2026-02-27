@@ -116,12 +116,29 @@ docker logs tw-prod-cloudflared --tail 50
 
 ### Rollback
 
+**Automatic rollback**: If API or web health checks fail after deploy, the
+deploy script automatically rolls back: restores the previous git SHA, restores
+the pre-migration database backup, rebuilds images, and restarts containers.
+The rollback block uses `set +e` so partial failures don't abort the recovery.
+
+**Manual rollback**:
 ```bash
 cd /data/tw-portfolio
 git log --oneline -5          # find the commit to roll back to
-git checkout <commit-sha>
-bash infra/scripts/deploy.sh
+bash infra/scripts/deploy.sh <commit-sha>
 ```
+
+**Database migration rollback**: Migrations are NOT automatically reversed by
+a code rollback. The deploy script takes a Postgres backup before every
+migration and attempts to restore it during automatic rollback. If automatic
+DB restore fails, manually restore from `/data/backups/tw-portfolio/`:
+```bash
+gunzip -c /data/backups/tw-portfolio/<latest>.sql.gz | docker exec -i tw-prod-postgres psql -U twp -d tw_portfolio
+```
+
+**Migration contract**: All `.sql` files in `db/migrations/` must be idempotent
+(use `IF NOT EXISTS`, `IF EXISTS` guards). Non-idempotent schema changes require
+a versioned migration runner (tracked in backlog).
 
 ### Database backup
 
@@ -133,6 +150,12 @@ Or manually:
 ```bash
 docker exec tw-prod-postgres pg_dump -U twp tw_portfolio > /data/backups/tw_portfolio_$(date +%Y%m%d_%H%M%S).sql
 ```
+
+### Expected downtime during deploy
+
+Container recreation causes approximately 10-30 seconds of downtime while
+`docker compose up -d` recreates changed containers and the Cloudflare Tunnel
+re-establishes. This is acceptable for a home-lab deployment.
 
 ### Security Assumptions
 
