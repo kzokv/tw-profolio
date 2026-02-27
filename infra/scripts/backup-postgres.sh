@@ -10,15 +10,21 @@ fi
 
 PG_USER="${POSTGRES_USER:-twp}"
 PG_DB="${POSTGRES_DB:-tw_portfolio}"
-BACKUP_DIR="${BACKUP_DIR:-/data/backups/tw-portfolio}"
+DEFAULT_HOME="${HOME:-$SCRIPT_DIR/../..}"
+STATE_BASE_DIR="${TWP_STATE_DIR:-$DEFAULT_HOME/.local/state/tw-portfolio}"
+BACKUP_DIR="${BACKUP_DIR:-$STATE_BASE_DIR/backups}"
 RETAIN_DAYS="${RETAIN_DAYS:-30}"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 DUMP_FILE="$BACKUP_DIR/${PG_DB}_${TIMESTAMP}.sql.gz"
 
-mkdir -p "$BACKUP_DIR"
+if ! mkdir -p "$BACKUP_DIR"; then
+  echo "ERROR: Cannot create BACKUP_DIR at '$BACKUP_DIR'" >&2
+  echo "Set BACKUP_DIR or TWP_STATE_DIR to a writable path." >&2
+  exit 1
+fi
 
 echo "==> Backing up ${PG_DB} to $DUMP_FILE"
-docker exec tw-prod-postgres pg_dump -U "$PG_USER" "$PG_DB" | gzip > "$DUMP_FILE"
+docker exec twp-prod-postgres pg_dump -U "$PG_USER" "$PG_DB" | gzip > "$DUMP_FILE"
 
 echo "==> Pruning backups older than ${RETAIN_DAYS} days..."
 find "$BACKUP_DIR" -name "${PG_DB}_*.sql.gz" -mtime "+${RETAIN_DAYS}" -delete
