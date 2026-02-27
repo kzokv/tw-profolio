@@ -233,6 +233,25 @@ re-establishes. This is acceptable for a home-lab deployment.
 - **Redis**: Password-authenticated but no TLS -- relies on Docker network isolation.
 - If this deployment moves to a multi-host setup, internal TLS must be added.
 
+## Page-load progress bar behavior
+
+- The thin bar at the very top of the viewport during **initial page load** is a **frontend-only visual indicator**.
+- It is rendered by the web app’s root layout (`apps/web/app/layout.tsx`) via `LoadingProgressBar` (`apps/web/components/ui/LoadingProgressBar.tsx`) and styled in `apps/web/app/globals.css` (`.loading-progress`, `.loading-progress__bar`).
+- The bar:
+  - Always shows briefly on first load and enforces a **minimum visible duration** to avoid a “flash”.
+  - Advances quickly at first, then **creeps toward ~80%** on slower loads.
+  - Jumps to 100% and hides shortly after the frontend considers the page ready.
+- It **does not currently track client-side route transitions**; it only reflects the very first load of the app.
+- Accessibility / motion:
+  - Respects `prefers-reduced-motion` (simplified animation pattern).
+  - Uses `aria-live="off"` so screen readers are not spammed with incremental updates.
+- Operational notes:
+  - This bar is about **perceived performance**, not backend health; use `/health/live` and `/health/ready` for actual service status.
+  - If the bar never appears or looks wrong in a given environment, first verify:
+    - The web container is serving the expected layout (no custom overrides that drop `LoadingProgressBar`).
+    - `globals.css` is loaded and includes `.loading-progress` styles, and theme tokens `--line` / `--accent` are set.
+    - No custom header or overlay is masking the bar (it expects to sit on top with `z-index: 1000`).
+
 ## Settings drawer behavior
 
 - Open settings from the top-right avatar button.
