@@ -1,0 +1,170 @@
+version: "3.9"
+
+services:
+  tw-prod-postgres:
+    image: postgres:16
+    container_name: tw-prod-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-twp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-tw_portfolio}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - tw-prod-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-twp}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  twp-prod-redis:
+    image: redis:7
+    container_name: twp-prod-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    networks:
+      - tw-prod-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  tw-prod-migrate:
+    image: postgres:16
+    container_name: tw-prod-migrate
+    depends_on:
+      tw-prod-postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ../../db/migrations:/migrations:ro
+    entrypoint: >
+      sh -c 'psql -h tw-prod-postgres -U ${POSTGRES_USER:-twp} -d ${POSTGRES_DB:-tw_portfolio} -f /migrations/001_init.sql'
+    networks:
+      - tw-prod-net
+    restart: "no"
+
+  tw-prod-api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    image: tw-prod-api:latest
+    container_name: tw-prod-api
+    restart: unless-stopped
+    depends_on:
+      tw-prod-postgres:
+        condition: service_healthy
+      twp-prod-redis:
+        condition: service_healthy
+    env_file:
+      - .env.prod
+    environment:
+      NODE_ENV: production
+      DB_URL: postgres://${POSTGRES_USER:-twp}:${POSTGRES_PASSWORD}@tw-prod-postgres:5432/${POSTGRES_DB:-tw_portfolio}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@twp-prod-redis:6379
+      API_PORT: "4000"
+    networks:
+      - tw-prod-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4000/health/live || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  tw-prod-web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: https://twp-api.kzokvdevs.dpdns.org
+    image: tw-prod-web:latest
+    container_name: tw-prod-web
+    restart: unless-stopped
+    depends_on:
+      tw-prod-api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      HOSTNAME: "0.0.0.0"
+      PORT: "3000"
+    networks:
+      - tw-prod-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: tw-prod-cloudflared
+    restart: unless-stopped
+    depends_on:
+      tw-prod-web:
+        condition: service_started
+      tw-prod-api:
+        condition: service_healthy
+    command: tunnel run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN is required}
+    networks:
+      - tw-prod-net
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  pgdata:
+
+networks:
+  tw-prod-net:
+    driver: bridge
