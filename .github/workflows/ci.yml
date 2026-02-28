@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, feature/home-lab-pro-deploy-poc]
+    branches: [main]
   pull_request:
-    branches: [main, feature/home-lab-pro-deploy-poc]
+    branches: [main]
 
 jobs:
   build-and-typecheck:
