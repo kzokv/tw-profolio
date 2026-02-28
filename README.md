@@ -21,7 +21,9 @@ All ports are configurable via env vars:
 
 ## Run
 
-1. Copy `.env.example` to `.env`.
+**Quick setup:** From repo root run `npm run onboard` (installs deps, Playwright browsers, creates `.env` from `.env.example` if missing, and runs lint). Then start infra and dev as below.
+
+1. Copy `.env.example` to `.env` (or use `npm run onboard` to do this automatically).
 2. Install dependencies: `npm install`
 3. Start infra: `docker compose -f infra/docker/docker-compose.yml up -d`
 4. Start API and web: `npm run dev`
@@ -31,6 +33,7 @@ All ports are configurable via env vars:
 - Unit: `npm run test:unit`
 - Integration: `npm run test:integration`
 - E2E: `npm run test:e2e`
+- API test reports (HTML / JSON / JUnit): see [apps/api/README.md](apps/api/README.md#testing-vitest).
 
 ## Web UI behavior
 
