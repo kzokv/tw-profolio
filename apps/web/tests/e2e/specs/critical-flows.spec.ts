@@ -10,8 +10,9 @@ test.describe("transaction flow", () => {
 
     await expect(page.getByTestId("hero-title")).toContainText(/Taiwan Portfolio Control Room|台灣投資組合控制台/);
     const accountSelect = page.getByTestId("tx-account-select");
-    const firstAccountId = await accountSelect.locator("option").first().getAttribute("value");
-    expect(firstAccountId).toBeTruthy();
+    const firstAccountOption = accountSelect.locator("option").first();
+    await expect(firstAccountOption).toHaveAttribute("value", /.+/);
+    const firstAccountId = await firstAccountOption.evaluate((option) => option.getAttribute("value"));
     await accountSelect.selectOption(firstAccountId!);
     await expect(page.getByTestId("tx-submit-button")).toBeEnabled();
 
