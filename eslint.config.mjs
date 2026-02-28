@@ -15,7 +15,7 @@
  * - Test overrides: relax in test dirs and *.test.ts / *.spec.ts files
  * - Document any rule turned off with a short comment
  *
- * PLAYWRIGHT: eslint-plugin-playwright recommended rules apply only to tests/e2e/**/*.ts
+ * PLAYWRIGHT: eslint-plugin-playwright recommended rules apply only to TS files under tests/e2e
  * (e.g. missing-playwright-await, no-focused-test, no-page-pause, expect-expect).
  */
 import eslint from '@eslint/js';
