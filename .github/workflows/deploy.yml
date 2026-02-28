@@ -11,7 +11,9 @@ concurrency:
 
 jobs:
   deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - uses: actions/checkout@v4
       - name: Install WARP
@@ -51,7 +53,16 @@ jobs:
         run: |
           sudo systemctl enable --now warp-svc
           sleep 10
-          warp-cli --accept-tos status || true
+          warp-cli --accept-tos registration new
+          warp-cli --accept-tos connect
+          sleep 5
+          warp-cli --accept-tos status
+          warp-cli --accept-tos settings
+      - name: Debug reachability
+        run: |
+          ip addr
+          ip route
+          nc -vz 192.168.2.66 22
       - name: Install SSH key
         run: |
           install -m 700 -d ~/.ssh
@@ -59,7 +70,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
       - name: Trust target host key
         run: |
-          ssh-keyscan -H 192.168.2.66 >> ~/.ssh/known_hosts
+          ssh-keyscan -T 10 -H 192.168.2.66 | tee -a ~/.ssh/known_hosts
       - name: Test SSH over WARP
         run: >
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes
