@@ -384,9 +384,7 @@ phase_done
 
 phase_start "Build images (tag: $IMAGE_TAG)"
 dc --profile migrate build
-docker tag twp-prod-api:latest "twp-prod-api:$IMAGE_TAG"
-docker tag twp-prod-web:latest "twp-prod-web:$IMAGE_TAG"
-docker tag twp-prod-migrate:latest "twp-prod-migrate:$IMAGE_TAG"
+# Compose image names use IMAGE_TAG, so built images are twp-prod-*:$IMAGE_TAG; do not retag from :latest.
 phase_done
 
 # ── Phase 3: Pre-migration backup ───────────────────────────────

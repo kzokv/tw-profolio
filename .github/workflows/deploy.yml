@@ -1,3 +1,7 @@
+# TODO: Pass workflow branch into deploy script (e.g. --branch) when GitHub Actions deployment
+# is scheduled. Manual deploy is intentional for now. Passing the branch lets SHA validation
+# work for feature branches (e.g. "Pass workflow branch into deploy script so SHA validation
+# works for feature branches"). See deploy.sh and PR review context.
 name: Deploy to QNAP
 
 on:
