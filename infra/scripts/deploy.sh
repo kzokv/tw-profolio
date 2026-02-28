@@ -13,6 +13,7 @@ PREVIOUS_SHA=""
 BRANCH_NAME="main"
 BRANCH_REMOTE="origin"
 DEPLOY_SHA=""
+IMAGE_TAG_EXPLICIT=""
 BRANCH_SPECIFIED=false
 SELECT_BRANCH=false
 FORCE=false
@@ -120,6 +121,8 @@ Options:
   -h, --help              Show this help message and exit (optional)
   -b, --branch BRANCH     Deploy from this branch (optional, default: main)
   -s, --select-branch     Select deploy branch from numbered local/remote list (optional)
+  -t, --image-tag TAG     Use this tag for all app images (twp-prod-api, twp-prod-web, twp-prod-migrate). If omitted, tag is derived from the deployed commit SHA.
+  -f, --force             Allow deploy with uncommitted changes (optional)
   DEPLOY_SHA              CI-tested commit SHA to deploy from the target branch (optional)
 
 Requirements:
@@ -165,6 +168,20 @@ parse_args() {
         ;;
       -s|--select-branch)
         SELECT_BRANCH=true
+        shift 1
+        ;;
+      -t|--image-tag)
+        if [ "${2-}" = "" ] || [[ "$2" == -* ]]; then
+          error_and_help "--image-tag requires a value"
+        fi
+        IMAGE_TAG_EXPLICIT="$2"
+        shift 2
+        ;;
+      --image-tag=*)
+        IMAGE_TAG_EXPLICIT="${1#*=}"
+        if [ -z "$IMAGE_TAG_EXPLICIT" ]; then
+          error_and_help "--image-tag requires a value"
+        fi
         shift 1
         ;;
       -f|--force)
@@ -353,8 +370,14 @@ PREVIOUS_SHA="$(git rev-parse HEAD)"
 
 phase_start "Checkout"
 checkout_deploy_ref "$BRANCH_NAME" "$DEPLOY_SHA" "$BRANCH_REMOTE"
-IMAGE_TAG="$(git rev-parse --short HEAD)"
-log "Deploy SHA: $(git rev-parse HEAD) (tag: $IMAGE_TAG)"
+if [ -n "$IMAGE_TAG_EXPLICIT" ]; then
+  IMAGE_TAG="$IMAGE_TAG_EXPLICIT"
+  log "Using explicit image tag: $IMAGE_TAG"
+else
+  IMAGE_TAG="$(git rev-parse --short HEAD)"
+  log "Deploy SHA: $(git rev-parse HEAD) (tag: $IMAGE_TAG)"
+fi
+export IMAGE_TAG
 phase_done
 
 # ── Phase 2: Build ───────────────────────────────────────────────
@@ -363,6 +386,7 @@ phase_start "Build images (tag: $IMAGE_TAG)"
 dc --profile migrate build
 docker tag twp-prod-api:latest "twp-prod-api:$IMAGE_TAG"
 docker tag twp-prod-web:latest "twp-prod-web:$IMAGE_TAG"
+docker tag twp-prod-migrate:latest "twp-prod-migrate:$IMAGE_TAG"
 phase_done
 
 # ── Phase 3: Pre-migration backup ───────────────────────────────
