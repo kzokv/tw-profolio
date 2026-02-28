@@ -8,21 +8,25 @@
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "test": "vitest run",
-    "test:integration": "vitest run test/integration/"
+    "test:integration": "vitest run test/integration/",
+    "test:html": "vitest run --reporter=verbose --reporter=html",
+    "test:json": "vitest run --reporter=verbose --reporter=json",
+    "test:junit": "vitest run --reporter=verbose --reporter=junit"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",
+    "@tw-portfolio/domain": "0.1.0",
+    "@tw-portfolio/shared-types": "0.1.0",
     "fastify": "^5.1.0",
     "pg": "^8.13.1",
     "redis": "^4.7.0",
-    "zod": "^3.23.8",
-    "@tw-portfolio/domain": "0.1.0",
-    "@tw-portfolio/shared-types": "0.1.0"
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/pg": "^8.11.10",
+    "@vitest/ui": "^4.0.18",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
-    "vitest": "^2.1.8"
+    "vitest": "^4.0.18"
   }
 }
