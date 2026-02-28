@@ -17,6 +17,13 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v4
+      - name: Debug environment baseline
+        run: |
+          set -x
+          uname -a
+          lsb_release -a || true
+          id
+          env | sort | grep -E '^(GITHUB_|RUNNER_|CI=)' || true
       - name: Install WARP
         run: |
           set -euxo pipefail
@@ -24,6 +31,13 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
           sudo apt-get update
           sudo apt-get install -y cloudflare-warp
+      - name: Debug installed WARP packages
+        run: |
+          set -x
+          which warp-cli || true
+          warp-cli --version || true
+          dpkg -l | grep cloudflare-warp || true
+          apt-cache policy cloudflare-warp || true
       - name: Configure WARP MDM
         run: |
           set -euxo pipefail
@@ -44,29 +58,65 @@ jobs:
               <string>warp</string>
           </dict>
           EOF
-      - name: Start and connect WARP
+      - name: Debug MDM file
+        run: |
+          set -x
+          sudo ls -la /var/lib/cloudflare-warp
+          sudo stat /var/lib/cloudflare-warp/mdm.xml
+          sudo sed \
+            -e 's#<key>auth_client_id</key>[[:space:]]*<string>[^<]*</string>#<key>auth_client_id</key><string>REDACTED</string>#' \
+            -e 's#<key>auth_client_secret</key>[[:space:]]*<string>[^<]*</string>#<key>auth_client_secret</key><string>REDACTED</string>#' \
+            -e 's#<key>organization</key>[[:space:]]*<string>[^<]*</string>#<key>organization</key><string>REDACTED</string>#' \
+            /var/lib/cloudflare-warp/mdm.xml
+      - name: Start WARP daemon
         run: |
           set -euxo pipefail
+          sudo systemctl daemon-reload
           sudo systemctl enable --now warp-svc
-          warp-cli --accept-tos registration new
-          warp-cli --accept-tos connect
-          connected=false
-          for _ in $(seq 1 12); do
-            status="$(warp-cli --accept-tos status || true)"
-            printf '%s\n' "$status"
-            if printf '%s\n' "$status" | grep -Eq 'Status update: Connected|Success'; then
-              connected=true
-              break
-            fi
-            sleep 5
-          done
-          if [ "$connected" != true ]; then
-            echo "ERROR: WARP did not reach a connected state" >&2
-            warp-cli --accept-tos status || true
-            exit 1
-          fi
+          sleep 10
+      - name: Debug WARP daemon
+        run: |
+          set +e
+          set -x
+          sudo systemctl status warp-svc --no-pager -l
+          sudo journalctl -u warp-svc -n 200 --no-pager
+          pgrep -a warp-svc || true
+          pgrep -a warp-cli || true
+      - name: Register and connect WARP
+        continue-on-error: true
+        run: |
+          set +e
+          set -x
           warp-cli --accept-tos status
           warp-cli --accept-tos settings
+          warp-cli --accept-tos registration show
+          warp-cli --accept-tos registration new
+          reg_new_rc=$?
+          echo "registration_new_exit_code=$reg_new_rc"
+          sleep 5
+          warp-cli --accept-tos registration show
+          warp-cli --accept-tos connect
+          connect_rc=$?
+          echo "connect_exit_code=$connect_rc"
+          sleep 10
+          warp-cli --accept-tos status
+          warp-cli --accept-tos settings
+          warp-cli --accept-tos registration show
+          exit 0
+      - name: Debug routing and reachability
+        continue-on-error: true
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set +e
+          set -x
+          target_host="${DEPLOY_HOST:-192.168.2.66}"
+          ip addr
+          ip route
+          resolvectl status || true
+          ping -c 2 "$target_host"
+          nc -vz -w 5 "$target_host" 22
+          ssh-keyscan -T 10 "$target_host"
       - name: Verify route to deploy host
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -81,6 +131,15 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "${{ secrets.DEPLOY_SSH_PRIVATE_KEY || secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
+      - name: Trust target host key
+        continue-on-error: true
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set +e
+          set -x
+          target_host="${DEPLOY_HOST:-192.168.2.66}"
+          ssh-keyscan -T 10 -H "$target_host" | tee -a ~/.ssh/known_hosts
       - name: Write SSH config
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -98,6 +157,12 @@ jobs:
             ServerAliveCountMax 4
             StrictHostKeyChecking accept-new
           EOF
+      - name: Debug SSH client config
+        run: |
+          set -x
+          ls -la ~/.ssh
+          ssh -V
+          ssh-keygen -lf ~/.ssh/id_ed25519
       - name: Verify SSH access
         run: |
           set -euxo pipefail
@@ -117,7 +182,7 @@ jobs:
           cd "$DEPLOY_PATH"
           git rev-parse --is-inside-work-tree
           git remote -v
-          bash infra/scripts/deploy.sh --branch "$DEPLOY_BRANCH" --image-tag "$DEPLOY_IMAGE_TAG"
+          bash infra/scripts/deploy.sh -t "latest"
           EOF
       - name: Cleanup SSH credentials
         if: always()
