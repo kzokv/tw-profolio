@@ -82,4 +82,6 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run build -w @tw-portfolio/domain
+      - run: npm run build -w @tw-portfolio/shared-types
       - run: npm run test:integration
