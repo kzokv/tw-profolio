@@ -4,18 +4,31 @@
 #
 # What it does:
 #   1. Installs npm dependencies (npm ci if lockfile present, else npm install).
-#   2. Installs Playwright browsers (project-level: npm run playwright:install).
-#   3. If .env is missing and .env.example exists, copies .env.example to .env and reminds you to edit.
-#   4. Runs a quick sanity check (lint) to verify setup.
+#   2. Installs Playwright browsers (npx playwright install).
+#   3. On Linux (interactive only): installs Playwright system deps; prompts for sudo if needed.
+#   4. If .env is missing and .env.example exists, copies .env.example to .env and reminds you to edit.
+#   5. Runs a quick sanity check (lint) to verify setup.
 #
 # Idempotent: safe to run multiple times. Re-running will reinstall deps and Playwright;
 # it will not overwrite an existing .env.
 #
-# Usage: ./scripts/onboard.sh   or   npm run onboard
+# Usage:
+#   ./scripts/onboard.sh              # Full onboarding
+#   ./scripts/onboard.sh --install-only  # Install only (npm + Playwright + deps), then exit
+#   ./scripts/onboard.sh --ci          # CI mode: non-interactive, skip .env, run lint
 #
 set -e
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
+
+INSTALL_ONLY=0
+CI_MODE=0
+for arg in "$@"; do
+  case "$arg" in
+    --install-only) INSTALL_ONLY=1 ;;
+    --ci) CI_MODE=1 ;;
+  esac
+done
 
 echo "==> tw-portfolio onboarding (root: $REPO_ROOT)"
 FAIL=0
@@ -24,7 +37,7 @@ FAIL=0
 # 1. npm dependencies
 # ---------------------------------------------------------------------------
 echo ""
-echo "[1/4] Installing npm dependencies..."
+echo "[1/5] Installing npm dependencies..."
 if [ -f package-lock.json ]; then
   npm ci
 else
@@ -33,34 +46,80 @@ fi
 echo "     Done."
 
 # ---------------------------------------------------------------------------
-# 2. Playwright browsers (project-level)
+# 2. Playwright browsers
 # ---------------------------------------------------------------------------
 echo ""
-echo "[2/4] Installing Playwright browsers (project-level)..."
-npm run playwright:install
+echo "[2/5] Installing Playwright browsers..."
+if [ "$CI_MODE" -eq 1 ]; then
+  npx playwright install --with-deps
+else
+  npx playwright install
+fi
 echo "     Done."
 
 # ---------------------------------------------------------------------------
-# 3. .env from .env.example if missing
+# 3. Playwright system deps (Linux, interactive only)
 # ---------------------------------------------------------------------------
-echo ""
-echo "[3/4] Checking .env..."
-if [ ! -f .env ]; then
-  if [ -f .env.example ]; then
-    cp .env.example .env
-    echo "     Created .env from .env.example. Edit .env if you need different DB/Redis or ports."
-  else
-    echo "     No .env or .env.example found. Create .env with at least: AUTH_MODE, PERSISTENCE_BACKEND, optional DB_URL, REDIS_URL (see docs/runbook.md)."
-  fi
+if [ "$(uname)" = "Linux" ] && [ "$CI_MODE" -eq 0 ]; then
+  echo ""
+  read -r -p "Install Playwright system dependencies (may need sudo)? [Y/n] " install_deps
+  case "$install_deps" in
+    n|N)
+      echo ""
+      echo "[3/5] Skipping Playwright system deps (user choice)."
+      ;;
+    *)
+      echo ""
+      echo "[3/5] Installing Playwright system dependencies (Linux)..."
+      if ! npx playwright install-deps 2>/dev/null; then
+        echo ""
+        read -r -p "playwright install-deps requires sudo. Retry with sudo? [y/N] " ans
+        if [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
+          sudo npx playwright install-deps
+        else
+          echo "     Skipped. Run 'npx playwright install-deps' manually if E2E fails."
+        fi
+      fi
+      echo "     Done."
+      ;;
+  esac
 else
-  echo "     .env already exists; leaving it unchanged."
+  echo ""
+  echo "[3/5] Skipping Playwright system deps (non-Linux or CI mode)."
+fi
+
+if [ "$INSTALL_ONLY" -eq 1 ]; then
+  echo ""
+  echo "==> Install complete (--install-only)."
+  exit 0
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Sanity check (lint)
+# 4. .env from .env.example if missing (skip in CI)
+# ---------------------------------------------------------------------------
+if [ "$CI_MODE" -eq 0 ]; then
+  echo ""
+  echo "[4/5] Checking .env..."
+  if [ ! -f .env ]; then
+    if [ -f .env.example ]; then
+      cp .env.example .env
+      echo "     Created .env from .env.example. Edit .env if you need different DB/Redis or ports."
+    else
+      echo "     No .env or .env.example found. Create .env with at least: AUTH_MODE, PERSISTENCE_BACKEND, optional DB_URL, REDIS_URL (see docs/runbook.md)."
+    fi
+  else
+    echo "     .env already exists; leaving it unchanged."
+  fi
+else
+  echo ""
+  echo "[4/5] Skipping .env (CI mode)."
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Sanity check (lint)
 # ---------------------------------------------------------------------------
 echo ""
-echo "[4/4] Sanity check (lint)..."
+echo "[5/5] Sanity check (lint)..."
 if npm run lint; then
   echo "     Lint passed."
 else
@@ -74,13 +133,15 @@ fi
 echo ""
 if [ "$FAIL" -eq 0 ]; then
   echo "==> Onboarding finished successfully."
-  echo ""
-  echo "Next steps:"
-  echo "  - If you use Postgres/Redis: start infra with"
-  echo "      docker compose -f infra/docker/docker-compose.yml up -d"
-  echo "  - Start API and web:  npm run dev"
-  echo "  - Run tests:  npm run test:unit | npm run test:integration | npm run test:e2e"
-  echo ""
+  if [ "$CI_MODE" -eq 0 ]; then
+    echo ""
+    echo "Next steps:"
+    echo "  - If you use Postgres/Redis: start infra with"
+    echo "      docker compose -f infra/docker/docker-compose.yml up -d"
+    echo "  - Start API and web:  npm run dev"
+    echo "  - Run tests:  npm run test:unit | npm run test:integration | npm run test:e2e"
+    echo ""
+  fi
 else
   echo "==> Onboarding completed with errors (see above). Fix and re-run as needed."
   exit 1

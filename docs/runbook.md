@@ -47,7 +47,7 @@ This document is the single source of truth for deploying and operating the **tw
 ### E2E tests (local)
 
 - **Run**: From repo root, `npm run test:e2e` (or `npm run test:e2e:ci` for JUnit output).
-- **Setup**: Install Playwright browsers once: `npm run playwright:install`. On Linux, if Chromium fails, run `npm run playwright:install-deps` (may need `sudo`).
+- **Setup**: Run `npm run onboard` or `npm run install:full` from repo root once per machine (installs npm deps, Playwright browsers, and on Linux prompts for system deps). If Chromium fails with missing shared libraries, run `npx playwright install-deps` manually (may need `sudo`).
 - **Ports**: E2E uses `WEB_PORT` (default `3333`) and `API_PORT` (default `4000`). Ensure these ports are free or set env vars to avoid conflicts with other services.
 - **Servers**: Playwright's `webServer` starts API and web automatically; no separate server script needed. Uses `PERSISTENCE_BACKEND=memory` and `AUTH_MODE=dev_bypass`.
 
