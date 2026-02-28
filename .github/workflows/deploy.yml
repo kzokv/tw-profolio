@@ -1,14 +1,9 @@
-# TODO: Pass workflow branch into deploy script (e.g. --branch) when GitHub Actions deployment
-# is scheduled. Manual deploy is intentional for now. Passing the branch lets SHA validation
-# work for feature branches (e.g. "Pass workflow branch into deploy script so SHA validation
-# works for feature branches"). See deploy.sh and PR review context.
-name: Deploy to QNAP
-
+name: Deploy via Cloudflare WARP
 on:
   workflow_run:
     workflows: [CI]
     types: [completed]
-    branches: [main, feature/home-lab-pro-deploy-poc]
+    branches: [main, dev]
 
 concurrency:
   group: deploy-production
@@ -20,36 +15,123 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Install cloudflared
+      - uses: actions/checkout@v4
+      - name: Debug environment baseline
         run: |
-          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
-          sudo dpkg -i cloudflared.deb
-
-      - name: Deploy via SSH through cloudflared
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
-          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
-          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+          set -x
+          uname -a
+          lsb_release -a || true
+          id
+          env | sort | grep -E '^(GITHUB_|RUNNER_|CI=)' || true
+      - name: Install WARP
         run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-
-          printf '%s\n' \
-            "Host deploy-target" \
-            "  HostName $DEPLOY_HOST" \
-            "  User $DEPLOY_USER" \
-            "  IdentityFile ~/.ssh/deploy_key" \
-            "  StrictHostKeyChecking accept-new" \
-            "  ProxyCommand cloudflared access ssh --hostname %h --id $CF_ACCESS_CLIENT_ID --secret $CF_ACCESS_CLIENT_SECRET" \
-            >> ~/.ssh/config
-
-          ssh deploy-target "cd $DEPLOY_PATH && bash infra/scripts/deploy.sh $DEPLOY_SHA"
-
-      - name: Cleanup SSH key
-        if: always()
-        run: rm -f ~/.ssh/deploy_key
+          set -euxo pipefail
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update
+          sudo apt-get install -y cloudflare-warp
+      - name: Debug installed WARP packages
+        run: |
+          set -x
+          which warp-cli || true
+          warp-cli --version || true
+          dpkg -l | grep cloudflare-warp || true
+          apt-cache policy cloudflare-warp || true
+      - name: Configure WARP MDM
+        run: |
+          set -euxo pipefail
+          sudo mkdir -p /var/lib/cloudflare-warp
+          sudo tee /var/lib/cloudflare-warp/mdm.xml >/dev/null <<EOF
+          <dict>
+              <key>auth_client_id</key>
+              <string>${{ secrets.CF_ACCESS_CLIENT_ID }}</string>
+              <key>auth_client_secret</key>
+              <string>${{ secrets.CF_ACCESS_CLIENT_SECRET }}</string>
+              <key>auto_connect</key>
+              <integer>1</integer>
+              <key>onboarding</key>
+              <false/>
+              <key>organization</key>
+              <string>${{ secrets.CF_TEAM_NAME }}</string>
+              <key>service_mode</key>
+              <string>warp</string>
+          </dict>
+          EOF
+      - name: Debug MDM file
+        run: |
+          set -x
+          sudo ls -la /var/lib/cloudflare-warp
+          sudo stat /var/lib/cloudflare-warp/mdm.xml
+          sudo sed \
+            -e 's#<key>auth_client_id</key>[[:space:]]*<string>[^<]*</string>#<key>auth_client_id</key><string>REDACTED</string>#' \
+            -e 's#<key>auth_client_secret</key>[[:space:]]*<string>[^<]*</string>#<key>auth_client_secret</key><string>REDACTED</string>#' \
+            -e 's#<key>organization</key>[[:space:]]*<string>[^<]*</string>#<key>organization</key><string>REDACTED</string>#' \
+            /var/lib/cloudflare-warp/mdm.xml
+      - name: Start WARP daemon
+        run: |
+          set -euxo pipefail
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now warp-svc
+          sleep 10
+      - name: Debug WARP daemon
+        run: |
+          set +e
+          set -x
+          sudo systemctl status warp-svc --no-pager -l
+          sudo journalctl -u warp-svc -n 200 --no-pager
+          pgrep -a warp-svc || true
+          pgrep -a warp-cli || true
+      - name: Register and connect WARP
+        continue-on-error: true
+        run: |
+          set +e
+          set -x
+          warp-cli --accept-tos status
+          warp-cli --accept-tos settings
+          warp-cli --accept-tos registration show
+          warp-cli --accept-tos registration new
+          reg_new_rc=$?
+          echo "registration_new_exit_code=$reg_new_rc"
+          sleep 5
+          warp-cli --accept-tos registration show
+          warp-cli --accept-tos connect
+          connect_rc=$?
+          echo "connect_exit_code=$connect_rc"
+          sleep 10
+          warp-cli --accept-tos status
+          warp-cli --accept-tos settings
+          warp-cli --accept-tos registration show
+          exit 0
+      - name: Debug routing and reachability
+        continue-on-error: true
+        run: |
+          set +e
+          set -x
+          ip addr
+          ip route
+          resolvectl status || true
+          ping -c 2 192.168.2.66
+          nc -vz -w 5 192.168.2.66 22
+          ssh-keyscan -T 10 192.168.2.66
+      - name: Install SSH key
+        run: |
+          set -euxo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+      - name: Trust target host key
+        continue-on-error: true
+        run: |
+          set +e
+          set -x
+          ssh-keyscan -T 10 -H 192.168.2.66 | tee -a ~/.ssh/known_hosts
+      - name: Debug SSH client config
+        run: |
+          set -x
+          ls -la ~/.ssh
+          ssh -V
+          ssh-keygen -lf ~/.ssh/id_ed25519
+      - name: Test SSH over WARP
+        run: |
+          set -euxo pipefail
+          ssh -vvv -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes ubuntu@192.168.2.66 'hostname && whoami'
