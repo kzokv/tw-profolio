@@ -71,6 +71,9 @@ function loadDotEnv(): void {
 
     const key = trimmed.slice(0, eqIndex).trim();
     let value = trimmed.slice(eqIndex + 1).trim();
+    // Strip inline comment ( "# comment") so enum/number parsing succeeds
+    const commentStart = value.indexOf(" #");
+    if (commentStart !== -1) value = value.slice(0, commentStart).trim();
     if (
       (value.startsWith("\"") && value.endsWith("\"")) ||
       (value.startsWith("'") && value.endsWith("'"))

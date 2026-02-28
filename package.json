@@ -14,6 +14,17 @@
     "test:unit": "npm run test -w libs/domain",
     "test:integration": "npm run test:integration -w apps/api",
     "test:e2e": "npm run test -w tests/e2e",
-    "test:e2e:ci": "npm run test:ci -w tests/e2e"
+    "test:e2e:ci": "npm run test:ci -w tests/e2e",
+    "playwright:install": "playwright install",
+    "playwright:install-deps": "playwright install-deps",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.15.0",
+    "@playwright/test": "^1.51.1",
+    "eslint": "^9.15.0",
+    "eslint-plugin-playwright": "^2.8.0",
+    "typescript-eslint": "^8.15.0"
   }
 }
