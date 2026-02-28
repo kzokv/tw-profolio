@@ -6,6 +6,8 @@ npm-debug.log*
 .env.prod
 infra/docker/.env.prod
 .next
+
+**/*next-env.d.ts
 dist
 coverage
 playwright-report

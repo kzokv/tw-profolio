@@ -21,10 +21,10 @@ All ports are configurable via env vars:
 
 ## Run
 
-**Quick setup:** From repo root run `npm run onboard` (installs deps, Playwright browsers, creates `.env` from `.env.example` if missing, and runs lint). Then start infra and dev as below.
+**Quick setup:** From repo root run `npm run onboard` (installs deps, Playwright browsers and system deps, creates `.env` from `.env.example` if missing, and runs lint). Or use `npm run install:full` for install only (npm + Playwright + system deps). Then start infra and dev as below.
 
 1. Copy `.env.example` to `.env` (or use `npm run onboard` to do this automatically).
-2. Install dependencies: `npm install`
+2. Install dependencies: `npm run install:full` or `npm install`
    - Workspace libs (`@tw-portfolio/domain`, `@tw-portfolio/shared-types`) are not built during install; they are built when you run `npm run dev` or `npm run build`.
 3. Start infra: `docker compose -f infra/docker/docker-compose.yml up -d`
 4. Start API and web: `npm run dev`. Build libs first if not yet built: `npm run build -w libs/domain -w libs/shared-types`.
