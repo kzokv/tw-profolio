@@ -6,7 +6,7 @@
   "scripts": {
     "build": "echo \"e2e has no build step\"",
     "test": "bash ./run-playwright-if-supported.sh",
-    "test:ci": "playwright test"
+    "test:ci": "npx playwright test"
   },
   "devDependencies": {
     "@playwright/test": "^1.51.1"
