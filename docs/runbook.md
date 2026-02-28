@@ -21,6 +21,13 @@ This document is the single source of truth for deploying and operating the **tw
 - API: `npm run dev -w apps/api`
 - Web: `npm run dev -w apps/web`
 
+### Build model
+
+- Workspace libraries (`@tw-portfolio/domain`, `@tw-portfolio/shared-types`) are **not** built during `npm install` / `npm ci`. Builds happen only via explicit commands.
+- Local: `npm run dev` (from repo root) starts the API and web dev servers. **Build libs first** if not yet built: `npm run build -w libs/domain -w libs/shared-types` (or `npm run build` for full build).
+- CI: `npm ci` then explicit `npm run build -w ...` steps for domain/shared-types/api (and web typecheck).
+- Production: Dockerfiles run `npm ci` then explicit `npm run build -w ...` in the same order; deploy builds images from the checked-out ref.
+
 ### Required env
 
 - `WEB_PORT`, `API_PORT`, `DB_PORT`, `REDIS_PORT`
@@ -36,6 +43,13 @@ This document is the single source of truth for deploying and operating the **tw
 - With `AUTH_USER_ID` / `NEXT_PUBLIC_AUTH_USER_ID`, the user id is embedded in the client bundle and is visible to anyone who can load the web app. This is acceptable for the intended single-user home-lab deployment; do not reuse for multi-tenant or untrusted-user environments.
 - Recompute history is explicit and audited via preview/confirm APIs.
 - For local tests without DB/Redis, set `PERSISTENCE_BACKEND=memory`.
+
+### E2E tests (local)
+
+- **Run**: From repo root, `npm run test:e2e` (or `npm run test:e2e:ci` for JUnit output).
+- **Setup**: Install Playwright browsers once: `npm run playwright:install`. On Linux, if Chromium fails, run `npm run playwright:install-deps` (may need `sudo`).
+- **Ports**: E2E uses `WEB_PORT` (default `3333`) and `API_PORT` (default `4000`). Ensure these ports are free or set env vars to avoid conflicts with other services.
+- **Servers**: Playwright's `webServer` starts API and web automatically; no separate server script needed. Uses `PERSISTENCE_BACKEND=memory` and `AUTH_MODE=dev_bypass`.
 
 ---
 

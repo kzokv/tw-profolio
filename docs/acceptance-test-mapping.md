@@ -11,27 +11,27 @@
 
 3. Historical immutability + recompute preview/confirm
 - Integration: `apps/api/test/integration/`
-- E2E: `tests/e2e/specs/critical-flows.spec.ts`
+- E2E: `apps/web/tests/e2e/specs/critical-flows.spec.ts`
 
 4. Critical user journey
-- E2E: `tests/e2e/specs/critical-flows.spec.ts`
+- E2E: `apps/web/tests/e2e/specs/critical-flows.spec.ts`
 
 5. Service health and readiness
 - API endpoints: `/health/live`, `/health/ready`
 - Integration: `apps/api/test/integration/` (contract: status shape and dependencies)
 
 6. Web locale switch and full Traditional Chinese translation
-- E2E: `tests/e2e/specs/critical-flows.spec.ts`
+- E2E: `apps/web/tests/e2e/specs/critical-flows.spec.ts`
 
 7. Settings unsaved-change discard flow
-- E2E: `tests/e2e/specs/critical-flows.spec.ts`
+- E2E: `apps/web/tests/e2e/specs/critical-flows.spec.ts`
 
 8. Settings/domain tooltips visibility and accessibility (including FIFO/LIFO details)
-- E2E: `tests/e2e/specs/critical-flows.spec.ts`
+- E2E: `apps/web/tests/e2e/specs/critical-flows.spec.ts`
 
 9. Fee profile settings UX v2 (drawer tabs, account fallback, per-security overrides)
 - Integration: `apps/api/test/integration/`
-- E2E: `tests/e2e/specs/critical-flows.spec.ts`
+- E2E: `apps/web/tests/e2e/specs/critical-flows.spec.ts`
 
 10. System-generated profile IDs and temp-ID resolution in full settings save flow
 - Integration: `apps/api/test/integration/`
@@ -53,4 +53,4 @@ Integration tests (`apps/api/test/integration/*.integration.test.ts`) cover the 
 
 Routes covered only by E2E or out of scope for integration (until implemented): GET `/auth/google/start`, GET `/auth/google/callback`; GET/PUT `/fee-profile-bindings` (bindings exercised via settings/full and settings/fee-config); GET `/quotes/latest`; POST `/ai/transactions/parse`.
 
-E2E test layout and coverage are described in `tests/e2e/README.md`.
+E2E test layout and coverage are described in [apps/web/tests/e2e/README.md](../apps/web/tests/e2e/README.md).

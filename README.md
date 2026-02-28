@@ -8,7 +8,7 @@ MVP monorepo for Taiwan stock/ETF portfolio tracking with configurable fee/tax r
 - `apps/api`: Fastify API
 - `libs/domain`: fee/tax/cost-basis engines
 - `libs/shared-types`: shared API/domain types
-- `tests/e2e`: Playwright critical journey tests
+- `apps/web/tests/e2e`: Playwright critical journey tests (owned by web app; run against full stack)
 
 ## Ports
 
@@ -25,8 +25,9 @@ All ports are configurable via env vars:
 
 1. Copy `.env.example` to `.env` (or use `npm run onboard` to do this automatically).
 2. Install dependencies: `npm install`
+   - Workspace libs (`@tw-portfolio/domain`, `@tw-portfolio/shared-types`) are not built during install; they are built when you run `npm run dev` or `npm run build`.
 3. Start infra: `docker compose -f infra/docker/docker-compose.yml up -d`
-4. Start API and web: `npm run dev`
+4. Start API and web: `npm run dev`. Build libs first if not yet built: `npm run build -w libs/domain -w libs/shared-types`.
 
 ## Test
 

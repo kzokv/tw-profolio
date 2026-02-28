@@ -4,20 +4,17 @@
   "version": "0.1.0",
   "workspaces": [
     "apps/*",
-    "libs/*",
-    "tests/e2e"
+    "libs/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces",
+    "build": "npm run build -w libs/domain -w libs/shared-types && npm run build -w @tw-portfolio/api -w @tw-portfolio/web",
     "dev": "set -a; [ -f ./.env ] && . ./.env; set +a; npm run dev -w apps/api & npm run dev -w apps/web",
     "test": "npm run test --workspaces",
     "test:unit": "npm run test -w libs/domain",
     "test:integration": "npm run test:integration -w apps/api",
-    "test:api:html": "npm run test:html -w apps/api",
-    "test:api:json": "npm run test:json -w apps/api",
-    "test:api:junit": "npm run test:junit -w apps/api",
-    "test:e2e": "npm run test -w tests/e2e",
-    "test:e2e:ci": "npm run test:ci -w tests/e2e",
+    "test:e2e": "npm run test:e2e -w @tw-portfolio/web",
+    "test:e2e:ci": "npm run test:e2e:ci -w @tw-portfolio/web",
+    "test:e2e:show-report": "npm run test:e2e:show-report -w @tw-portfolio/web",
     "onboard": "bash scripts/onboard.sh",
     "playwright:install": "playwright install",
     "playwright:install-deps": "playwright install-deps",

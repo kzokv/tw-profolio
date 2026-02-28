@@ -1,5 +1,28 @@
 import { expect, test } from "@playwright/test";
-import { gotoApp, openSettingsDrawer } from "../helpers/flows";
+import { appUrl, gotoApp, openSettingsDrawer } from "../helpers/flows";
+
+const webPort = Number(process.env.WEB_PORT ?? 3333);
+const apiPort = Number(process.env.API_PORT ?? 4000);
+
+test.beforeAll(async () => {
+  const webUrl = `http://127.0.0.1:${webPort}/`;
+  const apiUrl = `http://127.0.0.1:${apiPort}/health/live`;
+  const probe = async (url: string) => {
+    try {
+      const res = await fetch(url);
+      return { ok: res.ok, status: res.status };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  };
+  const [web, api] = await Promise.all([probe(webUrl), probe(apiUrl)]);
+  if (!web.ok || !api.ok) {
+    throw new Error(
+      `E2E servers not ready. Web ${webUrl}: ${JSON.stringify(web)}; API ${apiUrl}: ${JSON.stringify(api)}. ` +
+        "Ensure ports are free and run `npm run test:e2e` from repo root (webServer starts servers automatically)."
+    );
+  }
+});
 
 test.describe("transaction flow", () => {
   test("add transaction and verify holdings", async ({ page }) => {
@@ -76,7 +99,7 @@ test.describe("tooltips", () => {
     await page.getByTestId("tooltip-fifo-trigger").hover();
     await expect(page.getByTestId("tooltip-fifo-content")).toBeVisible();
 
-    await page.goto("/");
+    await page.goto(appUrl("/"));
     await page.getByTestId("tooltip-tx-account-trigger").hover();
     await expect(page.getByTestId("tooltip-tx-account-content")).toBeVisible();
   });

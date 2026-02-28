@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "[ -f ../../.env ] && set -a && . ../../.env && set +a; next dev -p ${WEB_PORT:-3000}",
-    "build": "next build --webpack",
+    "build": "npx next build --webpack",
     "start": "[ -f ../../.env ] && set -a && . ../../.env && set +a; next start -p ${WEB_PORT:-3000}",
-    "test": "echo \"web tests not configured\""
+    "test:e2e": "npx playwright test --config=tests/e2e/playwright.config.ts",
+    "test:e2e:ci": "npx playwright test --config=tests/e2e/playwright.config.ts --reporter=junit",
+    "test:e2e:show-report": "npx playwright show-report playwright-report"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
@@ -22,6 +24,7 @@
     "@tw-portfolio/shared-types": "0.1.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.51.1",
     "typescript": "^5.6.3",
     "@types/node": "^22.8.6",
     "@types/react": "^18.3.11",
