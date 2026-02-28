@@ -1,55 +1,58 @@
-# TODO: Pass workflow branch into deploy script (e.g. --branch) when GitHub Actions deployment
-# is scheduled. Manual deploy is intentional for now. Passing the branch lets SHA validation
-# work for feature branches (e.g. "Pass workflow branch into deploy script so SHA validation
-# works for feature branches"). See deploy.sh and PR review context.
-name: Deploy to QNAP
-
-on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main, feature/home-lab-pro-deploy-poc]
-
-concurrency:
-  group: deploy-production
-  cancel-in-progress: false
-
+name: Deploy via Cloudflare WARP
+'on':
+  workflow_dispatch:
 jobs:
   deploy:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    environment: production
     steps:
-      - name: Install cloudflared
+      - uses: actions/checkout@v4
+      - name: Install WARP
+        run: >
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg
+          --yes --dearmor --output
+          /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+
+          echo "deb
+          [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg]
+          https://pkg.cloudflareclient.com $(lsb_release -cs) main" | sudo tee
+          /etc/apt/sources.list.d/cloudflare-client.list
+
+          sudo apt-get update
+
+          sudo apt-get install -y cloudflare-warp
+      - name: Configure WARP MDM
         run: |
-          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
-          sudo dpkg -i cloudflared.deb
-
-      - name: Deploy via SSH through cloudflared
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
-          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
-          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+          sudo mkdir -p /var/lib/cloudflare-warp
+          sudo tee /var/lib/cloudflare-warp/mdm.xml >/dev/null <<EOF
+          <dict>
+              <key>auth_client_id</key>
+              <string>${{ secrets.CF_ACCESS_CLIENT_ID }}</string>
+              <key>auth_client_secret</key>
+              <string>${{ secrets.CF_ACCESS_CLIENT_SECRET }}</string>
+              <key>auto_connect</key>
+              <integer>1</integer>
+              <key>onboarding</key>
+              <false/>
+              <key>organization</key>
+              <string>${{ secrets.CF_TEAM_NAME }}</string>
+              <key>service_mode</key>
+              <string>warp</string>
+          </dict>
+          EOF
+      - name: Start WARP
         run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-
-          printf '%s\n' \
-            "Host deploy-target" \
-            "  HostName $DEPLOY_HOST" \
-            "  User $DEPLOY_USER" \
-            "  IdentityFile ~/.ssh/deploy_key" \
-            "  StrictHostKeyChecking accept-new" \
-            "  ProxyCommand cloudflared access ssh --hostname %h --id $CF_ACCESS_CLIENT_ID --secret $CF_ACCESS_CLIENT_SECRET" \
-            >> ~/.ssh/config
-
-          ssh deploy-target "cd $DEPLOY_PATH && bash infra/scripts/deploy.sh $DEPLOY_SHA"
-
-      - name: Cleanup SSH key
-        if: always()
-        run: rm -f ~/.ssh/deploy_key
+          sudo systemctl enable --now warp-svc
+          sleep 10
+          warp-cli --accept-tos status || true
+      - name: Install SSH key
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+      - name: Trust target host key
+        run: |
+          ssh-keyscan -H 192.168.2.66 >> ~/.ssh/known_hosts
+      - name: Test SSH over WARP
+        run: >
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes
+          ubuntu@192.168.2.66 'hostname && whoami'
