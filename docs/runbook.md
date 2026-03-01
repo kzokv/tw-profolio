@@ -117,6 +117,344 @@ If the host has less than 8 GB RAM, reduce per-container limits in `infra/docker
    bash infra/scripts/deploy.sh
    ```
 
+### 4.1 GitHub Actions deploy path via WARP-to-Tunnel
+
+This repository's automated deploy path uses **Cloudflare WARP + private routing**, not `cloudflared access ssh`.
+
+Why:
+
+- Cloudflare documents client-side `cloudflared` for non-HTTP apps as a legacy path for SSH.
+- Cloudflare documents that client-side `cloudflared` depends on WebSockets and notes that long-lived connections can close unexpectedly.
+- Cloudflare recommends **WARP-to-Tunnel** or **Access for Infrastructure** for SSH instead.
+- For GitHub Actions, the runner is a headless machine. WARP with a **service token** is the correct non-interactive authentication model.
+
+In this deployment, the runner:
+
+1. Installs the WARP client
+2. Enrolls into the Zero Trust organization using a **service token**
+3. Routes traffic for the deploy host over WARP
+4. SSHes to the deploy host by private IP
+5. Runs `infra/scripts/deploy.sh --branch <branch> <sha>`
+
+### 4.2 Cloudflare prerequisites for automated deploy
+
+Before enabling the GitHub Actions deploy workflow, configure all of the following in Cloudflare Zero Trust.
+
+#### A. Tunnel and private route
+
+The deploy target must be reachable through an existing Cloudflare Tunnel.
+
+For this environment:
+
+- Deploy target: `192.168.2.66`
+- SSH user: `ubuntu`
+
+In Zero Trust:
+
+1. Go to `Networks` -> `Routes` -> `CIDR`.
+2. Add route `192.168.2.66/32`.
+3. Attach that route to the same tunnel that is running on the QNAP side.
+
+Why:
+
+- The GitHub runner must reach the deploy host as a **private network destination** over WARP.
+- A public hostname mapped to `ssh://...:22` is not required for this WARP-based machine flow.
+
+Verify from the tunnel side before touching GitHub Actions:
+
+```bash
+nc -vz 192.168.2.66 22
+```
+
+If this fails locally from the tunnel side, WARP will not fix it.
+
+#### B. Service token for headless enrollment
+
+Create a dedicated service token for the GitHub runner.
+
+In Zero Trust:
+
+1. Go to `Settings` -> `Service tokens`.
+2. Create a service token for deploy automation.
+3. Save the **Client ID** and **Client Secret**.
+
+Why:
+
+- Cloudflare documents service tokens as the non-interactive way to enroll devices.
+- The GitHub Actions runner cannot complete a browser login or interactive identity-provider flow.
+
+#### C. Device enrollment permissions
+
+Allow that service token to enroll devices into WARP.
+
+In Zero Trust:
+
+1. Create an Access policy with:
+   - `Action`: `Service Auth`
+   - `Include`: the deploy service token
+2. Add that policy to `Settings` -> `WARP Client` -> `Device enrollment permissions`.
+
+Why:
+
+- Without a device enrollment rule, the runner will load the MDM file but fail registration.
+- In our debugging, this class of problem showed up as missing registration or auth failures even though the daemon was running.
+
+#### D. Team name / organization
+
+Set the WARP `organization` value to the **team name**, not the full domain.
+
+Correct example:
+
+```xml
+<key>organization</key>
+<string>twp</string>
+```
+
+Incorrect example:
+
+```xml
+<key>organization</key>
+<string>twp.cloudflareaccess.com</string>
+```
+
+How to find it:
+
+1. Open Zero Trust.
+2. Go to `Settings`.
+3. Find the team name / team domain section.
+
+For a team domain like `twp.cloudflareaccess.com`, the organization value is `twp`.
+
+Why:
+
+- WARP expects the team name.
+- Using the full Access domain causes registration/authentication failures even though the local MDM file is loaded successfully.
+
+#### E. Device profile and Split Tunnels
+
+For GitHub Actions, prefer a **narrow Include-mode** profile for just the deploy destination.
+
+Recommended:
+
+1. Go to `Team & Resources` -> `Devices` -> `Device profiles`.
+2. Edit the profile used by the GitHub runner.
+3. Set `Split Tunnels` to `Include IPs and domains`.
+4. Include only:
+   - `192.168.2.66/32`
+
+Why:
+
+- The runner only needs to send deploy traffic through WARP.
+- This keeps the policy easy to reason about and avoids unintentionally tunneling unrelated runner traffic.
+
+Common mistake:
+
+- Leaving the default `Exclude IPs and domains` profile in place with `192.168.0.0/16` excluded.
+
+Impact:
+
+- Traffic to `192.168.2.66` bypasses WARP entirely.
+- The runner times out on `nc 192.168.2.66 22` or `ssh-keyscan 192.168.2.66`.
+
+This was a real failure mode during setup.
+
+### 4.3 GitHub repository secrets and environment
+
+Add these repository or environment secrets:
+
+| Secret | Purpose |
+|---|---|
+| `CF_ACCESS_CLIENT_ID` | Cloudflare service token Client ID |
+| `CF_ACCESS_CLIENT_SECRET` | Cloudflare service token Client Secret |
+| `CF_TEAM_NAME` | Cloudflare Zero Trust team name, for example `twp` |
+| `DEPLOY_SSH_PRIVATE_KEY` | Private SSH key for `ubuntu@192.168.2.66` |
+| `DEPLOY_HOST` | Optional. Defaults to `192.168.2.66` |
+| `DEPLOY_USER` | Optional. Defaults to `ubuntu` |
+| `DEPLOY_PATH` | Optional. Defaults to `/home/<DEPLOY_USER>/tw-portfolio` |
+
+Also create a GitHub environment named `production` if environment approvals or environment-scoped secrets are required.
+
+### 4.4 Prepare the SSH target
+
+Create a dedicated deploy key and authorize it on the deploy host.
+
+#### A. Generate the deploy keypair
+
+Run this on a trusted machine:
+
+```bash
+ssh-keygen -t ed25519 -C "github-actions-deploy" -f github-actions-deploy
+chmod 600 ./github-actions-deploy
+```
+
+This creates:
+
+- `github-actions-deploy`: private key
+- `github-actions-deploy.pub`: public key
+
+Important:
+
+- The private key must stay private and should only be stored in GitHub Secrets and trusted operator machines.
+- OpenSSH will refuse to use a private key if permissions are too broad.
+
+If you see:
+
+```text
+WARNING: UNPROTECTED PRIVATE KEY FILE!
+Permissions 0644 for './github-actions-deploy' are too open.
+```
+
+fix it with:
+
+```bash
+chmod 600 ./github-actions-deploy
+```
+
+#### B. Install the public key on the deploy target
+
+Authorize the public key for `ubuntu` on `192.168.2.66`:
+
+```bash
+ssh-copy-id -i github-actions-deploy.pub ubuntu@192.168.2.66
+```
+
+If `ssh-copy-id` is unavailable, append the key manually on the target:
+
+```bash
+mkdir -p /home/ubuntu/.ssh
+chmod 700 /home/ubuntu/.ssh
+cat github-actions-deploy.pub >> /home/ubuntu/.ssh/authorized_keys
+chmod 600 /home/ubuntu/.ssh/authorized_keys
+chown -R ubuntu:ubuntu /home/ubuntu/.ssh
+```
+
+#### C. Verify the host is reachable and the key works
+
+Before configuring GitHub Actions, verify three things from a machine that can reach the target on the LAN.
+
+1. Port `22` is reachable:
+
+```bash
+nc -vz 192.168.2.66 22
+```
+
+2. The private key file permissions are correct:
+
+```bash
+ls -l ./github-actions-deploy
+```
+
+Expected mode is `-rw-------` or equivalent `600`.
+
+3. SSH succeeds with the private key:
+
+```bash
+ssh -i ./github-actions-deploy ubuntu@192.168.2.66 'hostname && whoami'
+```
+
+Expected result:
+
+- the remote hostname is printed
+- `ubuntu` is printed as the user
+
+Why:
+
+- WARP handles network reachability.
+- SSH authentication is still your responsibility; this deploy path currently uses a dedicated SSH key for the `ubuntu` user.
+
+#### D. Store the private key in GitHub Actions
+
+Add the full contents of `github-actions-deploy` as the `DEPLOY_SSH_PRIVATE_KEY` secret.
+
+Do not store the `.pub` file in GitHub Secrets. Only the private key is needed by the workflow.
+
+#### E. Troubleshooting SSH key verification
+
+If `ssh` fails before prompting or connecting:
+
+- verify `nc -vz 192.168.2.66 22` succeeds
+- verify the target SSH daemon is listening on port `22`
+- verify the public key is present in `/home/ubuntu/.ssh/authorized_keys`
+
+If `ssh` says the private key is ignored:
+
+- run `chmod 600 ./github-actions-deploy`
+
+If `ssh` prompts for a password instead of using the key:
+
+- the wrong public key was installed, or
+- the key was installed for the wrong user, or
+- `authorized_keys` / `.ssh` permissions are too open
+
+### 4.5 Workflow behavior
+
+The deploy workflow in [`.github/workflows/deploy.yml`](/home/ubuntu/github/tw-portfolio/.github/workflows/deploy.yml):
+
+1. Waits for the `CI` workflow to succeed
+2. Installs the WARP client on the GitHub-hosted runner
+3. Writes the local WARP `mdm.xml` containing:
+   - `auth_client_id`
+   - `auth_client_secret`
+   - `organization`
+   - `service_mode`
+4. Starts WARP and registers/connects the runner
+5. Verifies TCP reachability to the deploy host on port `22`
+6. SSHes to the deploy host
+7. Runs:
+   ```bash
+   bash infra/scripts/deploy.sh --branch "$DEPLOY_BRANCH" "$DEPLOY_SHA"
+   ```
+
+Why the workflow passes both branch and SHA:
+
+- The deploy script validates that the target SHA is reachable from the target branch.
+- This ensures the exact CI-tested commit is what gets deployed.
+
+### 4.6 How to verify WARP MDM is actually working
+
+Writing `mdm.xml` without errors is not enough. There are two separate questions:
+
+1. Did WARP load the local policy file?
+2. Did the runner successfully register and connect?
+
+Evidence that the MDM file was loaded:
+
+- `warp-cli --accept-tos settings` shows values as `local policy`
+- daemon logs mention:
+  - `mdm_path updated`
+  - `Found single configuration in MDM file`
+  - the expected `Organization { name: "..." }`
+
+Evidence that registration/connect worked:
+
+- `warp-cli --accept-tos status` reports connected
+- route verification to the deploy host succeeds
+- `nc -vz 192.168.2.66 22` succeeds from the runner
+
+Important distinction:
+
+- MDM file loaded does **not** guarantee registration succeeded.
+- We observed a case where the MDM file was valid and detected, but registration failed because the organization value was wrong.
+
+### 4.7 Why `cloudflared access ssh` is not the deploy method
+
+Do not use `cloudflared access ssh --hostname ...` with a service token for GitHub Actions deploys.
+
+Reasons:
+
+- Cloudflare documents client-side `cloudflared` SSH as **legacy**.
+- Cloudflare states that `cloudflared` authentication relies on **WebSockets**.
+- Cloudflare notes that automated services should use a **service token** where possible and recommends **WARP-to-Tunnel** in those situations.
+- In practice, this path is easier to misconfigure because it mixes a user-style SSH flow with machine credentials.
+
+What usually goes wrong with the legacy path:
+
+- `websocket: bad handshake`
+- service-token policy attached to a flow that expects browser/user login
+- tunnel hostname mapped correctly, but auth method still mismatched
+
+For human operators, evaluate **Access for Infrastructure** instead. Cloudflare recommends it for SSH because it adds finer-grained policies, short-lived certificates, and command logging.
+
 ---
 
 ## 5. Normal deploy flow
@@ -128,8 +466,10 @@ Deploys use `infra/scripts/deploy.sh` with `infra/docker/docker-compose.prod.yml
 On push to `main`, GitHub Actions:
 
 1. Runs lint, type-check, unit tests, and integration tests
-2. SSHs into the deploy host via the Cloudflare tunnel
-3. Runs `infra/scripts/deploy.sh $DEPLOY_SHA` (with the workflow head SHA)
+2. Enrolls the runner into Cloudflare WARP using a service token
+3. Routes traffic to the deploy host over the private route
+4. SSHs into the deploy host
+5. Runs `infra/scripts/deploy.sh --branch <head-branch> <head-sha>`
 
 The exact CI-tested commit is deployed; the image tag is the short SHA of that commit unless overridden (see `--image-tag` below).
 
