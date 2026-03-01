@@ -5,6 +5,8 @@ npm-debug.log*
 .env.ok
 .env.prod
 infra/docker/.env.prod
+.env.dev
+infra/docker/.env.dev
 .next
 
 **/*next-env.d.ts
