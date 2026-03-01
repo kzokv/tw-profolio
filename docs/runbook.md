@@ -180,7 +180,7 @@ Expected deployment inputs for this flow:
 
 ### 4.2 Branch-to-Environment Mapping
 
-This repository uses two automatic deployment lanes:
+This repository uses two deployment lanes:
 
 - `dev` -> [`.github/workflows/deploy-dev.yml`](/home/ubuntu/github/tw-portfolio/.github/workflows/deploy-dev.yml) -> GitHub Environment `dev`
 - `main` -> [`.github/workflows/deploy.yml`](/home/ubuntu/github/tw-portfolio/.github/workflows/deploy.yml) -> GitHub Environment `production`
@@ -189,7 +189,7 @@ Expected promotion flow:
 
 1. Merge feature work into `dev`
 2. `CI` runs on `dev`
-3. Successful `CI` triggers the dev deploy workflow automatically
+3. Run the dev deploy workflow manually from GitHub Actions
 4. Validate the dev environment
 5. Merge `dev` into `main`
 6. `CI` runs on `main`
@@ -218,6 +218,7 @@ In Zero Trust:
 1. Go to `Networks` -> `Routes` -> `CIDR`.
 2. Add a route for the private deploy endpoint `192.0.2.10/32`
 3. Attach that route to the same tunnel that is running on the QNAP side.
+4. Confirm the QNAP-side tunnel connector is actually running and healthy before testing WARP from GitHub Actions.
 
 CIDR examples:
 
@@ -245,6 +246,32 @@ What failure looks like:
 
 - the route is missing or attached to the wrong tunnel: SSH from the runner times out
 - the deploy host is down or SSH is not listening: `nc` fails locally and the GitHub job fails at the SSH verification step
+- the tunnel is not running on the QNAP or is not advertising the route: WARP enrollment succeeds, but the runner still cannot reach the deploy host
+
+Host-side validation checklist:
+
+1. Confirm the Cloudflare Tunnel or connector process is running on the QNAP host.
+2. Confirm the tunnel attached to the private route is the same tunnel running on that host.
+3. Confirm the deploy host IP used by `DEPLOY_HOST` falls inside the advertised private route.
+4. From the QNAP side, confirm SSH is listening on the deploy target:
+   ```bash
+   nc -vz 192.0.2.10 22
+   ```
+5. If the tunnel runs in Docker Compose, inspect the connector logs:
+   ```bash
+   docker logs twp-prod-cloudflared --tail 100
+   docker logs twp-dev-cloudflared --tail 100
+   ```
+6. If the tunnel runs as a host service, inspect the local service logs instead:
+   ```bash
+   sudo journalctl -u cloudflared -n 100 --no-pager
+   ```
+
+Important:
+
+- WARP on the GitHub runner is only the client-side on-ramp.
+- You still need a Cloudflare Tunnel, WARP Connector, or equivalent private-network connector on the QNAP side.
+- A valid service token alone does not make the private host reachable.
 
 #### B. Service token for headless enrollment
 
@@ -412,6 +439,13 @@ Relationship to the deploy flow:
 - `DEPLOY_PATH` must point to the repo checkout that contains `infra/scripts/deploy.sh`
 - `DEPLOY_USER` must own or be allowed to execute the deploy script and access the repo directory
 
+`DEPLOY_PATH` requirements:
+
+- Use an absolute path such as `/home/ubuntu/tw-portfolio`.
+- Do not use `~/tw-portfolio`.
+- The workflow quotes `DEPLOY_PATH` inside the remote SSH command, so `~` is treated literally and does not expand to the deploy user's home directory.
+- If `DEPLOY_PATH` uses `~`, the preflight step fails with exit code `1` because checks like `test -f '$DEPLOY_PATH/infra/scripts/deploy.sh'` cannot find the repo.
+
 ### 4.5 Prepare the SSH Target
 
 Create a dedicated deploy key and authorize it on the deploy host.
@@ -553,6 +587,11 @@ Both deploy workflows use the same hardened pattern:
    bash infra/scripts/deploy.sh --environment "$DEPLOY_ENVIRONMENT" --branch "$DEPLOY_BRANCH" -t "$DEPLOY_IMAGE_TAG" "$DEPLOY_SHA"
    ```
 
+Current workflow triggers:
+
+- Dev deploys are manual-only via `workflow_dispatch` in [`.github/workflows/deploy-dev.yml`](/home/ubuntu/github/tw-portfolio/.github/workflows/deploy-dev.yml).
+- Production deploys run automatically after a successful `CI` run on `main` via [`.github/workflows/deploy.yml`](/home/ubuntu/github/tw-portfolio/.github/workflows/deploy.yml).
+
 Why the workflow passes both branch and SHA:
 
 - the deploy script validates that the target SHA is reachable from the branch being deployed
@@ -594,8 +633,8 @@ Deploys use the shared `infra/scripts/deploy.sh` entrypoint with an explicit `--
 When a change is merged into `dev`:
 
 1. GitHub runs `CI` on `dev`
-2. a successful `CI` run triggers [`.github/workflows/deploy-dev.yml`](/home/ubuntu/github/tw-portfolio/.github/workflows/deploy-dev.yml)
-3. the runner deploys the exact `dev` commit SHA to the `dev` environment
+2. an operator manually runs [`.github/workflows/deploy-dev.yml`](/home/ubuntu/github/tw-portfolio/.github/workflows/deploy-dev.yml)
+3. the runner deploys the selected `dev` commit SHA to the `dev` environment
 4. the remote deploy script builds images tagged `latest`
 
 ### 5.2 Automated Production Deploy
@@ -772,6 +811,65 @@ If the request to the API hostname shows **status 0** in DevTools and the page o
 3. **Browser console**: Look for a CORS error (e.g. “blocked by CORS policy: No 'Access-Control-Allow-Origin' header”).
 
 4. **Quick test**: Open `https://twp-api.example.com/health/live` in a new tab. If it returns JSON, the API and DNS are fine and the issue is CORS for the web origin.
+
+### 8.3 GitHub Actions deploy fails with `No route to host`
+
+This usually means the runner enrolled into WARP but Cloudflare still does not have a working private-network path to the deploy target.
+
+Check these in order:
+
+1. Confirm the QNAP-side Cloudflare Tunnel or connector is running.
+2. Confirm the private route covering `DEPLOY_HOST` is attached to that tunnel.
+3. Confirm the GitHub Environment `DEPLOY_HOST` value is the private IP or hostname covered by that route.
+4. Confirm the WARP device profile for the runner includes the deploy host or CIDR in Split Tunnels.
+5. Confirm the service token is allowed in `Settings -> WARP Client -> Device enrollment permissions`.
+
+Useful commands:
+
+```bash
+warp-cli --accept-tos status
+sudo systemctl status warp-svc --no-pager
+nc -vz 192.0.2.10 22
+docker logs twp-prod-cloudflared --tail 100
+docker logs twp-dev-cloudflared --tail 100
+```
+
+Important:
+
+- WARP client authentication on the runner does not replace the need for a tunnel or private-network connector on the QNAP side.
+- If the tunnel is missing, stopped, or not advertising the right route, GitHub Actions can authenticate to WARP and still fail to reach SSH.
+
+### 8.4 GitHub Actions deploy fails with exit code `1` during SSH preflight
+
+If the workflow reaches SSH successfully but exits with code `1` during `Verify SSH connectivity and remote files`, the remote command ran and one of the preflight checks failed.
+
+The workflow checks all of the following on the remote host:
+
+- `infra/scripts/deploy.sh` exists under `DEPLOY_PATH`
+- the environment-specific compose file exists
+- the environment-specific env file exists
+- `docker compose` is available for the deploy user
+
+Common causes:
+
+- `DEPLOY_PATH` is wrong
+- `DEPLOY_PATH` uses `~` instead of an absolute path
+- `infra/docker/.env.dev` or `infra/docker/.env.prod` has not been created on the remote host
+- the deploy user cannot run `docker compose`
+
+Useful remote command:
+
+```bash
+ssh "$DEPLOY_USER@$DEPLOY_HOST" "
+set -x
+ls -l '$DEPLOY_PATH/infra/scripts/deploy.sh'
+ls -l '$DEPLOY_PATH/infra/docker/docker-compose.dev.yml'
+ls -l '$DEPLOY_PATH/infra/docker/.env.dev'
+docker compose version
+"
+```
+
+If you are debugging production, replace the dev file names with the production equivalents.
 
 ---
 
