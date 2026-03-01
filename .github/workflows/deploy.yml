@@ -1,14 +1,12 @@
-# TODO: Pass workflow branch into deploy script (e.g. --branch) when GitHub Actions deployment
-# is scheduled. Manual deploy is intentional for now. Passing the branch lets SHA validation
-# work for feature branches (e.g. "Pass workflow branch into deploy script so SHA validation
-# works for feature branches"). See deploy.sh and PR review context.
-name: Deploy to QNAP
+name: Deploy Production via Cloudflare WARP
 
 on:
   workflow_run:
     workflows: [CI]
     types: [completed]
-    branches: [main, feature/home-lab-pro-deploy-poc]
+    branches: [main]
+
+permissions: {}
 
 concurrency:
   group: deploy-production
@@ -17,39 +15,10 @@ concurrency:
 jobs:
   deploy:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - name: Install cloudflared
-        run: |
-          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
-          sudo dpkg -i cloudflared.deb
-
-      - name: Deploy via SSH through cloudflared
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
-          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
-          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-
-          printf '%s\n' \
-            "Host deploy-target" \
-            "  HostName $DEPLOY_HOST" \
-            "  User $DEPLOY_USER" \
-            "  IdentityFile ~/.ssh/deploy_key" \
-            "  StrictHostKeyChecking accept-new" \
-            "  ProxyCommand cloudflared access ssh --hostname %h --id $CF_ACCESS_CLIENT_ID --secret $CF_ACCESS_CLIENT_SECRET" \
-            >> ~/.ssh/config
-
-          ssh deploy-target "cd $DEPLOY_PATH && bash infra/scripts/deploy.sh $DEPLOY_SHA"
-
-      - name: Cleanup SSH key
-        if: always()
-        run: rm -f ~/.ssh/deploy_key
+    uses: ./.github/workflows/_deploy-reusable.yml
+    with:
+      environment: production
+      deploy_branch: main
+      deploy_image_tag: latest
+      deploy_sha: ${{ github.event.workflow_run.head_sha }}
+    secrets: inherit
