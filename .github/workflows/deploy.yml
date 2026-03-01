@@ -1,6 +1,7 @@
 name: Deploy Production via Cloudflare WARP
 
 on:
+  workflow_dispatch:
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -13,12 +14,51 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate-branch:
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_branch: ${{ steps.validate.outputs.deploy_branch }}
+      deploy_sha: ${{ steps.validate.outputs.deploy_sha }}
+    steps:
+      - name: Validate trigger branch
+        id: validate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            deploy_branch="$RUN_HEAD_BRANCH"
+            deploy_sha="$RUN_HEAD_SHA"
+
+            if [ "$RUN_CONCLUSION" != "success" ]; then
+              echo "Refusing production deploy because CI concluded with '$RUN_CONCLUSION'." >&2
+              exit 1
+            fi
+          else
+            deploy_branch="$REF_NAME"
+            deploy_sha="$SHA"
+          fi
+
+          if [ "$deploy_branch" != "main" ]; then
+            echo "Refusing production deploy from non-main branch: $deploy_branch" >&2
+            exit 1
+          fi
+
+          echo "deploy_branch=$deploy_branch" >>"$GITHUB_OUTPUT"
+          echo "deploy_sha=$deploy_sha" >>"$GITHUB_OUTPUT"
+
   deploy:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    needs: validate-branch
     uses: ./.github/workflows/_deploy-reusable.yml
     with:
       environment: production
-      deploy_branch: main
+      deploy_branch: ${{ needs.validate-branch.outputs.deploy_branch }}
       deploy_image_tag: latest
-      deploy_sha: ${{ github.event.workflow_run.head_sha }}
+      deploy_sha: ${{ needs.validate-branch.outputs.deploy_sha }}
     secrets: inherit
