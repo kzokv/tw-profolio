@@ -40,6 +40,20 @@ Tip: When `next dev` can't bind to `WEB_PORT` (default `3333`), a previous insta
 - `ALLOWED_ORIGINS` (comma-separated CORS allowlist)
 - `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX_MUTATIONS`
 
+What these settings mean:
+
+- `WEB_PORT`: local port where the Next.js web app listens. Example: `3333`.
+- `API_PORT`: local port where the API server listens. Example: `4000`.
+- `DB_PORT`: local port mapped to Postgres for development. Example: `5432`.
+- `REDIS_PORT`: local port mapped to Redis for development. Example: `6379`.
+- `AUTH_MODE`: authentication strategy. `dev_bypass` skips real auth for local development; `oauth` expects an authenticated user id header from the web app or a fronting auth layer.
+- `PERSISTENCE_BACKEND`: storage mode used by the API. Example values: `memory` for local tests, `postgres` for normal development and production-like runs.
+- `DB_URL`: Postgres connection string used by the API. Example: `postgres://app:app@localhost:5432/tw_portfolio`.
+- `REDIS_URL`: Redis connection string used by the API. Example: `redis://localhost:6379`.
+- `ALLOWED_ORIGINS`: comma-separated list of browser origins allowed to call the API. Example: `http://localhost:3333,https://twp-web.example.com`.
+- `RATE_LIMIT_WINDOW_MS`: rolling time window for mutation rate limiting, in milliseconds. Example: `60000` for a one-minute window.
+- `RATE_LIMIT_MAX_MUTATIONS`: maximum number of allowed write operations within the rate-limit window. Example: `60`.
+
 ### Notes
 
 - Use `AUTH_MODE=dev_bypass` for local development only.
@@ -57,16 +71,23 @@ Tip: When `next dev` can't bind to `WEB_PORT` (default `3333`), a previous insta
 
 ---
 
-## 3. Production Deployment (QNAP Home Lab)
+## 3. Deployment Overview
 
 ### 3.1 Architecture
 
-- **QNAP**: `192.168.2.10` (QTS 5.2.8, x86_64)
-- **Deployment orchestrator**: `ubuntu-sshd` container at `192.168.2.61`
+- **Deployment host**: QNAP-based home lab running the deploy target and app containers
+- **Deploy transport**: GitHub Actions runner -> Cloudflare WARP -> private SSH target
 - **App network**: Docker bridge `twp-prod-net`
-- **External access**: Cloudflare Tunnel
-  - Web: `https://twp-web.kzokvdevs.dpdns.org`
-  - API: `https://twp-api.kzokvdevs.dpdns.org`
+- **External access**: Cloudflare Tunnel terminates public traffic and forwards to the web and API containers
+
+Glossary:
+
+- **Cloudflare WARP**: the client installed on the GitHub-hosted runner so the runner can securely reach private network destinations during the workflow.
+- **Cloudflare Tunnel**: the outbound tunnel running on your infrastructure that publishes selected internal services to Cloudflare without opening inbound firewall ports.
+- **Private SSH target**: the internal machine or container that accepts SSH from the runner once WARP routing is active.
+- **Docker bridge**: the private Docker network that lets the app containers talk to each other on the deployment host.
+
+Keep concrete private IPs, Cloudflare tunnel IDs, and public hostnames out of this document. Store them in the appropriate GitHub Environment secrets or variables instead.
 
 ### 3.2 Host resource budget
 
@@ -81,102 +102,575 @@ If the host has less than 8 GB RAM, reduce per-container limits in `infra/docker
 
 ### 3.3 Containers
 
-| Container              | Image                          | Port  |
-|------------------------|--------------------------------|-------|
-| `twp-prod-web`         | `twp-prod-web:<IMAGE_TAG>`     | 3000  |
-| `twp-prod-api`         | `twp-prod-api:<IMAGE_TAG>`     | 4000  |
-| `twp-prod-migrate`     | `twp-prod-migrate:<IMAGE_TAG>` | (run once) |
-| `twp-prod-postgres`    | `postgres:16`                  | 5432  |
-| `twp-prod-redis`       | `redis:7`                      | 6379  |
-| `twp-prod-cloudflared` | `cloudflare/cloudflared`       | —     |
+| Environment | Stack prefix | Example containers |
+|-------------|--------------|--------------------|
+| `production` | `twp-prod` | `twp-prod-web`, `twp-prod-api`, `twp-prod-postgres` |
+| `dev` | `twp-dev` | `twp-dev-web`, `twp-dev-api`, `twp-dev-postgres` |
 
-`IMAGE_TAG` is set by the deploy script (see Deploy script options). Postgres, Redis, and cloudflared use fixed upstream images.
+`IMAGE_TAG` is set by the deploy script (see Deploy script options). App images are environment-specific (`twp-prod-*` or `twp-dev-*`), while Postgres, Redis, and cloudflared use fixed upstream images.
 
 ---
 
-## 4. First-time setup
+## 4. First-time Setup
 
 1. **Clone the repo** on the QNAP (e.g. inside the `ubuntu-sshd` data mount):
    ```bash
    cd ~ && git clone <repo-url> tw-portfolio
    ```
 
-2. **Create the production env file**:
+2. **Create the environment file on the deploy host**:
    ```bash
    cp infra/docker/.env.prod.example infra/docker/.env.prod
    # Edit .env.prod with real passwords, tunnel token, and AUTH_USER_ID (required for AUTH_MODE=oauth)
    chmod 600 infra/docker/.env.prod
    ```
+   For the dev lane, create a separate file:
+   ```bash
+   cp infra/docker/.env.dev.example infra/docker/.env.dev
+   # Edit .env.dev with dev-specific passwords, tunnel token, public domains, and AUTH_USER_ID
+   chmod 600 infra/docker/.env.dev
+   ```
    With `AUTH_MODE=oauth`, set `AUTH_USER_ID` to a stable user id (e.g. `user-1` or your email). The web app sends it as `x-authenticated-user-id` on every API request so endpoints like `GET /settings` succeed instead of returning 401.
 
-3. **Configure the Cloudflare Tunnel** in the Cloudflare Zero Trust dashboard (see `infra/cloudflared/README.md`). **Add both public hostnames** (web and API); otherwise the browser cannot resolve the API hostname.
+3. **Configure the Cloudflare Tunnel** in the Cloudflare Zero Trust dashboard (see `infra/cloudflared/README.md`). Add both public hostnames for the web and API services.
 
 4. **Deploy**:
    ```bash
    cd ~/tw-portfolio
-   bash infra/scripts/deploy.sh
+   bash infra/scripts/deploy.sh --environment production
    ```
+
+### 4.1 GitHub Actions Deploy Path via WARP
+
+This repository's automated deploy path uses **Cloudflare WARP + private routing**, not `cloudflared access ssh`.
+
+Why:
+
+- Cloudflare documents client-side `cloudflared` for non-HTTP apps as a legacy path for SSH.
+- Cloudflare documents that client-side `cloudflared` depends on WebSockets and notes that long-lived connections can close unexpectedly.
+- Cloudflare recommends **WARP-to-Tunnel** or **Access for Infrastructure** for SSH instead.
+- For GitHub Actions, the runner is a headless machine. WARP with a **service token** is the correct non-interactive authentication model.
+
+In both deploy workflows, the runner:
+
+1. Installs the WARP client
+2. Enrolls into the Zero Trust organization using a **service token**
+3. Routes traffic for the deploy host over WARP
+4. SSHes to the deploy host by the environment-scoped `DEPLOY_HOST` value
+5. Runs `infra/scripts/deploy.sh --environment <environment> --branch <branch> -t latest <sha>`
+
+What this means in practice:
+
+- the GitHub-hosted runner starts on the public internet and cannot normally reach your private deploy host
+- WARP enrolls the runner into Cloudflare Zero Trust for the duration of the job
+- once enrolled, Cloudflare routes only the allowed private destination traffic through WARP
+- SSH then behaves like a normal private-network SSH connection to the deploy host
+- the deploy script checks out the exact CI-tested commit SHA and builds app images tagged as `latest`
+
+Expected deployment inputs for this flow:
+
+- `CF_ACCESS_CLIENT_ID`
+- `CF_ACCESS_CLIENT_SECRET`
+- `CF_TEAM_NAME`
+- `DEPLOY_HOST`
+- `DEPLOY_USER`
+- `DEPLOY_PATH`
+- `DEPLOY_SSH_KEY`
+- `DEPLOY_KNOWN_HOSTS`
+
+### 4.2 Branch-to-Environment Mapping
+
+This repository uses two automatic deployment lanes:
+
+- `dev` -> [`.github/workflows/deploy-dev.yml`](/home/ubuntu/github/tw-portfolio/.github/workflows/deploy-dev.yml) -> GitHub Environment `dev`
+- `main` -> [`.github/workflows/deploy.yml`](/home/ubuntu/github/tw-portfolio/.github/workflows/deploy.yml) -> GitHub Environment `production`
+
+Expected promotion flow:
+
+1. Merge feature work into `dev`
+2. `CI` runs on `dev`
+3. Successful `CI` triggers the dev deploy workflow automatically
+4. Validate the dev environment
+5. Merge `dev` into `main`
+6. `CI` runs on `main`
+7. Successful `CI` triggers the production deploy workflow automatically
+
+### 4.3 Cloudflare Prerequisites for Automated Deploy
+
+Before enabling the GitHub Actions deploy workflow, configure all of the following in Cloudflare Zero Trust.
+
+The IPs, hostnames, and team names below are documentation examples only; use your GitHub Environment values for real deployments.
+
+#### A. Tunnel and private route
+
+The deploy target must be reachable through an existing Cloudflare Tunnel.
+For instance:
+- Deploy target: `192.0.2.10`
+- SSH user: `ubuntu`
+
+Terms:
+
+- **Private route**: a Cloudflare route that tells WARP which internal IP or CIDR range should be sent through the tunnel instead of the public internet.
+- **CIDR**: address and prefix notation used to describe either a single host or a range of IPs.
+
+In Zero Trust:
+
+1. Go to `Networks` -> `Routes` -> `CIDR`.
+2. Add a route for the private deploy endpoint `192.0.2.10/32`
+3. Attach that route to the same tunnel that is running on the QNAP side.
+
+CIDR examples:
+
+- `192.0.2.10/32` means exactly one host
+- if you need a small range such as `192.0.2.65` through `192.0.2.69`, one broad CIDR is `192.0.2.64/29`, which also includes `.64`, `.70`, and `.71`
+- if you need to cover exactly `192.0.2.65` through `192.0.2.69`, use multiple routes:
+  - `192.0.2.65/32`
+  - `192.0.2.66/31`
+  - `192.0.2.68/31`
+
+Why:
+
+- The GitHub runner must reach the deploy host as a **private network destination** over WARP.
+- A public hostname mapped to `ssh://...:22` is not required for this WARP-based machine flow.
+
+Verify from a trusted machine on the tunnel side before touching GitHub Actions:
+
+```bash
+nc -vz 192.0.2.10 22
+```
+
+If this fails locally from the tunnel side, WARP will not fix it.
+
+What failure looks like:
+
+- the route is missing or attached to the wrong tunnel: SSH from the runner times out
+- the deploy host is down or SSH is not listening: `nc` fails locally and the GitHub job fails at the SSH verification step
+
+#### B. Service token for headless enrollment
+
+Create a dedicated service token for the GitHub runner.
+
+Term:
+
+- **Service token**: a machine credential pair used by automation instead of an interactive browser login.
+
+In Zero Trust:
+
+1. Go to `Settings` -> `Service tokens`.
+2. Create a service token for deploy automation.
+3. Save the **Client ID** and **Client Secret**.
+
+Why:
+
+- Cloudflare documents service tokens as the non-interactive way to enroll devices.
+- The GitHub Actions runner cannot complete a browser login or interactive identity-provider flow.
+
+What failure looks like:
+
+- wrong Client ID or Client Secret: WARP registration fails
+- missing token policy permissions: WARP starts but never connects to the private route
+
+#### C. Device enrollment permissions
+
+Allow that service token to enroll devices into WARP.
+
+Term:
+
+- **Device enrollment permission**: the Zero Trust policy that decides which identities or service tokens may register a device into WARP.
+
+In Zero Trust:
+
+1. Create an Access policy with:
+   - `Action`: `Service Auth`
+   - `Include`: the deploy service token
+2. Add that policy to `Settings` -> `WARP Client` -> `Device enrollment permissions`.
+
+Why:
+
+- Without a device enrollment rule, the runner will load the MDM file but fail registration.
+- In our debugging, this class of problem showed up as missing registration or auth failures even though the daemon was running.
+
+Validation:
+
+- confirm the policy action is `Service Auth`
+- confirm the service token you created is included in that policy
+- confirm the policy is attached to WARP device enrollment permissions, not only to an unrelated Access application
+
+#### D. Team name / organization
+
+Set the WARP `organization` value to the **team name**, not the full domain.
+
+Correct example:
+
+```xml
+<key>organization</key>
+<string>example-team</string>
+```
+
+Incorrect example:
+
+```xml
+<key>organization</key>
+<string>example-team.cloudflareaccess.com</string>
+```
+
+How to find it:
+
+1. Open Zero Trust.
+2. Go to `Settings`.
+3. Find the team name / team domain section.
+
+For a team domain like `example-team.cloudflareaccess.com`, the organization value is `example-team`.
+
+Why:
+
+- WARP expects the team name.
+- Using the full Access domain causes registration/authentication failures even though the local MDM file is loaded successfully.
+
+#### E. Device profile and Split Tunnels
+
+For GitHub Actions, prefer a **narrow Include-mode** profile for just the deploy destination.
+
+Terms:
+
+- **Split Tunnels**: WARP rule set that decides which traffic goes through Cloudflare and which traffic goes directly to the internet.
+- **Include mode**: only the listed IPs/domains go through WARP.
+- **Exclude mode**: everything goes through WARP except the listed IPs/domains.
+
+Recommended:
+
+1. Go to `Team & Resources` -> `Devices` -> `Device profiles`.
+2. Edit the profile used by the GitHub runner.
+3. Set `Split Tunnels` to `Include IPs and domains`.
+4. Include only the deploy destination or the narrowest private route that covers it.
+
+Why:
+
+- The runner only needs to send deploy traffic through WARP.
+- This keeps the policy easy to reason about and avoids unintentionally tunneling unrelated runner traffic.
+
+Common mistake:
+
+- Leaving the default `Exclude IPs and domains` profile in place with your private range excluded.
+
+Impact:
+
+- Traffic to the deploy host bypasses WARP entirely.
+- The runner times out on `ssh` to the deploy host.
+
+This was a real failure mode during setup.
+
+Validation:
+
+- confirm the device profile used by the runner is the one you edited
+- confirm the deploy host IP or CIDR appears in the Include list
+- if you broaden the route later, keep `DEPLOY_HOST` inside the included CIDR range
+
+### 4.4 GitHub Environment Secrets and Variables
+
+Create two GitHub Environments:
+
+- `dev`
+- `production`
+
+Store deploy values in the environment that uses them. Keep the secret names the same across environments, but set environment-specific values.
+
+How to think about these values:
+
+- use **secrets** for credentials or values you do not want printed in logs, such as SSH keys, host keys, service-token credentials, and usually the private deploy host
+- use **variables** for stable non-secret configuration if your policy allows it
+- all of these values feed the deploy workflow directly, so a typo here usually shows up as a failed WARP connection, failed SSH connection, or wrong remote path
+
+| Name | Type | Value | Where to get it |
+|---|---|---|---|
+| `CF_ACCESS_CLIENT_ID` | Secret | Cloudflare Zero Trust service token Client ID | Cloudflare Zero Trust -> `Settings` -> `Service tokens` |
+| `CF_ACCESS_CLIENT_SECRET` | Secret | Cloudflare Zero Trust service token Client Secret | Cloudflare Zero Trust -> `Settings` -> `Service tokens` |
+| `CF_TEAM_NAME` | Secret | Cloudflare Zero Trust team name only, for example `twp` | Cloudflare Zero Trust team/domain settings |
+| `DEPLOY_SSH_KEY` | Secret | Private SSH deploy key in OpenSSH format | The private half of the deploy keypair generated for the remote deploy account |
+| `DEPLOY_KNOWN_HOSTS` | Secret | Verified OpenSSH `known_hosts` entry for the deploy host | Generate with `ssh-keyscan -H 192.0.2.10` on a trusted machine, then verify the fingerprint out-of-band before storing |
+| `DEPLOY_HOST` | Secret or variable | Private host/IP used for SSH over WARP, for example `192.0.2.10` | Your private deploy endpoint |
+| `DEPLOY_USER` | Secret or variable | SSH user for remote deploy, for example `ubuntu` | The remote account used for deployment |
+| `DEPLOY_PATH` | Secret or variable | Absolute repo path on the deploy host | The checked-out repo location on the remote machine |
+
+Recommended:
+
+- keep `DEPLOY_HOST` as a secret if you want it masked in logs
+- use separate dev and production values whenever the targets differ
+- scope all deploy values to the matching environment, not repository-wide secrets
+
+Concrete examples:
+
+- `DEPLOY_HOST=192.0.2.10`
+- `DEPLOY_USER=ubuntu`
+- `DEPLOY_PATH=/home/ubuntu/tw-portfolio`
+- `CF_TEAM_NAME=example-team`
+
+Relationship to the deploy flow:
+
+- `DEPLOY_HOST` must match the host covered by the Cloudflare private route
+- `DEPLOY_KNOWN_HOSTS` should be generated only after you have confirmed the final deploy host/IP
+- `DEPLOY_PATH` must point to the repo checkout that contains `infra/scripts/deploy.sh`
+- `DEPLOY_USER` must own or be allowed to execute the deploy script and access the repo directory
+
+### 4.5 Prepare the SSH Target
+
+Create a dedicated deploy key and authorize it on the deploy host.
+
+#### A. Generate the deploy keypair
+
+Run this on a trusted machine:
+
+```bash
+ssh-keygen -t ed25519 -C "github-actions-deploy" -f github-actions-deploy
+chmod 600 ./github-actions-deploy
+```
+
+This creates:
+
+- `github-actions-deploy`: private key
+- `github-actions-deploy.pub`: public key
+
+Important:
+
+- The private key must stay private and should only be stored in GitHub Secrets and trusted operator machines.
+- OpenSSH will refuse to use a private key if permissions are too broad.
+
+If you see:
+
+```text
+WARNING: UNPROTECTED PRIVATE KEY FILE!
+Permissions 0644 for './github-actions-deploy' are too open.
+```
+
+fix it with:
+
+```bash
+chmod 600 ./github-actions-deploy
+```
+
+#### B. Install the public key on the deploy target
+
+Authorize the public key for the deploy user on the deploy host:
+
+```bash
+ssh-copy-id -i github-actions-deploy.pub ubuntu@192.0.2.10
+```
+
+If `ssh-copy-id` is unavailable, append the key manually on the target:
+
+```bash
+mkdir -p /home/ubuntu/.ssh
+chmod 700 /home/ubuntu/.ssh
+cat github-actions-deploy.pub >> /home/ubuntu/.ssh/authorized_keys
+chmod 600 /home/ubuntu/.ssh/authorized_keys
+chown -R ubuntu:ubuntu /home/ubuntu/.ssh
+```
+
+#### C. Verify the host is reachable and the key works
+
+Before configuring GitHub Actions, verify three things from a machine that can reach the target on the LAN.
+
+1. Port `22` is reachable:
+
+```bash
+nc -vz 192.0.2.10 22
+```
+
+2. The private key file permissions are correct:
+
+```bash
+ls -l ./github-actions-deploy
+```
+
+Expected mode is `-rw-------` or equivalent `600`.
+
+3. SSH succeeds with the private key:
+
+```bash
+ssh -i ./github-actions-deploy ubuntu@192.0.2.10 'hostname && whoami'
+```
+
+Expected result:
+
+- the remote hostname is printed
+- the configured deploy user is printed
+
+Why:
+
+- WARP handles network reachability.
+- SSH authentication is still your responsibility; this deploy path should use a dedicated deploy key for a dedicated deploy user.
+
+#### D. Capture and verify the host key
+
+On a trusted machine, collect the host key:
+
+```bash
+ssh-keyscan -H 192.0.2.10
+```
+
+Then verify the fingerprint directly on the server or through an already trusted channel before storing the final entry as `DEPLOY_KNOWN_HOSTS`.
+
+#### E. Store the private key in GitHub Actions
+
+Add the full contents of `github-actions-deploy` as the `DEPLOY_SSH_KEY` secret.
+
+Do not store the `.pub` file in GitHub Secrets. Only the private key is needed by the workflow.
+
+#### F. Troubleshooting SSH key verification
+
+If `ssh` fails before prompting or connecting:
+
+- verify `nc -vz 192.0.2.10 22` succeeds
+- verify the target SSH daemon is listening on port `22`
+- verify the public key is present in the deploy user's `authorized_keys`
+
+If `ssh` says the private key is ignored:
+
+- run `chmod 600 ./github-actions-deploy`
+
+If `ssh` prompts for a password instead of using the key:
+
+- the wrong public key was installed, or
+- the key was installed for the wrong user, or
+- `authorized_keys` / `.ssh` permissions are too open
+
+### 4.6 Workflow Behavior
+
+Both deploy workflows use the same hardened pattern:
+
+1. Wait for the `CI` workflow to succeed on the matching branch
+2. Install the WARP client on the GitHub-hosted runner
+3. Write a root-only local WARP `mdm.xml` with:
+   - `auth_client_id`
+   - `auth_client_secret`
+   - `organization`
+   - `service_mode`
+4. Start WARP and connect the runner
+5. Install the SSH private key and pinned `known_hosts` entry
+6. Verify the remote deploy script, compose file, and env file exist on the target host
+7. Run:
+   ```bash
+   bash infra/scripts/deploy.sh --environment "$DEPLOY_ENVIRONMENT" --branch "$DEPLOY_BRANCH" -t "$DEPLOY_IMAGE_TAG" "$DEPLOY_SHA"
+   ```
+
+Why the workflow passes both branch and SHA:
+
+- the deploy script validates that the target SHA is reachable from the branch being deployed
+- the workflow always deploys the exact CI-tested commit while still tagging the resulting images as `latest`
+
+Jargon explained:
+
+- **workflow_run**: a GitHub Actions trigger that starts this deploy workflow after another workflow, in this case `CI`, completes
+- **environment**: the GitHub Actions environment that scopes deploy secrets, variables, and optional approval gates
+- **known_hosts**: the local SSH trust file used to verify the deploy host identity before the connection is allowed
+
+### 4.7 Why `cloudflared access ssh` Is Not the Deploy Method
+
+Do not use `cloudflared access ssh --hostname ...` with a service token for GitHub Actions deploys.
+
+Reasons:
+
+- Cloudflare documents client-side `cloudflared` SSH as **legacy**.
+- Cloudflare states that `cloudflared` authentication relies on **WebSockets**.
+- Cloudflare notes that automated services should use a **service token** where possible and recommends **WARP-to-Tunnel** in those situations.
+- In practice, this path is easier to misconfigure because it mixes a user-style SSH flow with machine credentials.
+
+What usually goes wrong with the legacy path:
+
+- `websocket: bad handshake`
+- service-token policy attached to a flow that expects browser/user login
+- tunnel hostname mapped correctly, but auth method still mismatched
+
+For human operators, evaluate **Access for Infrastructure** instead. Cloudflare recommends it for SSH because it adds finer-grained policies, short-lived certificates, and command logging.
 
 ---
 
-## 5. Normal deploy flow
+## 5. Deployment Flow
 
-Deploys use `infra/scripts/deploy.sh` with `infra/docker/docker-compose.prod.yml` and `infra/docker/.env.prod`. The script: checks out the target ref, builds app images, takes a pre-migration DB backup, runs migrations, brings up services, runs health checks, and on failure performs an automatic rollback.
+Deploys use the shared `infra/scripts/deploy.sh` entrypoint with an explicit `--environment` flag. The script selects the matching compose file and env file (`docker-compose.prod.yml` + `.env.prod` for production, `docker-compose.dev.yml` + `.env.dev` for dev), checks out the target ref, builds app images, takes a pre-migration DB backup, runs migrations, brings up services, runs health checks, and on failure performs an automatic rollback.
 
-### 5.1 Automated deploy (CI)
+### 5.1 Automated Dev Deploy
 
-On push to `main`, GitHub Actions:
+When a change is merged into `dev`:
 
-1. Runs lint, type-check, unit tests, and integration tests
-2. SSHs into the deploy host via the Cloudflare tunnel
-3. Runs `infra/scripts/deploy.sh $DEPLOY_SHA` (with the workflow head SHA)
+1. GitHub runs `CI` on `dev`
+2. a successful `CI` run triggers [`.github/workflows/deploy-dev.yml`](/home/ubuntu/github/tw-portfolio/.github/workflows/deploy-dev.yml)
+3. the runner deploys the exact `dev` commit SHA to the `dev` environment
+4. the remote deploy script builds images tagged `latest`
 
-The exact CI-tested commit is deployed; the image tag is the short SHA of that commit unless overridden (see `--image-tag` below).
+### 5.2 Automated Production Deploy
 
-### 5.2 Manual deploy
+When validated changes are merged into `main`:
+
+1. GitHub runs `CI` on `main`
+2. a successful `CI` run triggers [`.github/workflows/deploy.yml`](/home/ubuntu/github/tw-portfolio/.github/workflows/deploy.yml)
+3. the runner deploys the exact `main` commit SHA to the `production` environment
+4. the remote deploy script builds images tagged `latest`
+
+### 5.3 Manual Deploy
 
 ```bash
-ssh ubuntu@192.168.2.61
+ssh ubuntu@192.0.2.10
 cd ~/tw-portfolio
-bash infra/scripts/deploy.sh
+bash infra/scripts/deploy.sh --environment production
 ```
 
 To deploy a specific CI-tested commit:
 
 ```bash
-bash infra/scripts/deploy.sh <commit-sha>
+bash infra/scripts/deploy.sh --environment production <commit-sha>
 ```
 
-### 5.3 Deploy script reference
+### 5.4 Deploy Script Reference
 
 **Usage:** `infra/scripts/deploy.sh [OPTIONS] [DEPLOY_SHA]`
 
 | Option / argument | Description |
 |-------------------|-------------|
 | `-h`, `--help` | Show help and exit |
-| `-b`, `--branch BRANCH` | Deploy from this branch (default: `main`) |
+| `-e`, `--environment ENV` | Deploy `production` or `dev` (default: `production`) |
+| `-b`, `--branch BRANCH` | Deploy from this branch (default: `main`; use `dev` for the dev lane) |
 | `-s`, `--select-branch` | Interactively choose deploy branch from `git branch -a` (requires a TTY) |
-| `-t`, `--image-tag TAG` | Use **TAG** for all app images (`twp-prod-api`, `twp-prod-web`, `twp-prod-migrate`). If omitted, the tag is the **short commit SHA** of the deployed ref (e.g. `a1b2c3d`). |
+| `-t`, `--image-tag TAG` | Use **TAG** for all app images in the selected environment (`twp-prod-*` or `twp-dev-*`). The GitHub Actions deploy workflows pass `latest` here. |
 | `-f`, `--force` | Allow deploy with uncommitted changes (use with care; uncommitted changes may be lost on checkout) |
 | `DEPLOY_SHA` | Optional. Commit SHA to deploy; must be reachable from the target branch. If omitted, script pulls latest from the branch. |
 
+Option examples:
+
+- deploy the latest commit from `main`:
+  ```bash
+  bash infra/scripts/deploy.sh --environment production
+  ```
+- deploy the latest commit from `dev`:
+  ```bash
+  bash infra/scripts/deploy.sh --environment dev --branch dev
+  ```
+- deploy a specific tested commit from `main`:
+  ```bash
+  bash infra/scripts/deploy.sh --environment production <commit-sha>
+  ```
+- deploy a specific tested commit from `dev` while keeping the runtime image tag as `latest`:
+  ```bash
+  bash infra/scripts/deploy.sh --environment dev --branch dev -t latest <commit-sha>
+  ```
+
 **Image tag behavior**
 
-- **Default (no `--image-tag`)**: After checkout, the script sets `IMAGE_TAG=$(git rev-parse --short HEAD)`. All three app images are built and tagged with this value, so the same tag is used consistently for api, web, and migrate.
-- **With `--image-tag TAG`**: The script uses **TAG** as `IMAGE_TAG` for the same three images. Use this when you need a specific tag (e.g. version label or a known-good tag for a rollback where you still want to build from the current checkout but label images explicitly).
-- **Constraint**: The script always **builds** from the current checkout; it does not pull pre-built images by tag. For a rollback to an old commit, use `deploy.sh <commit-sha>` so the tag becomes that commit’s short SHA, or use `--image-tag` only when you want a different tag string for the images built in this run.
+- **Default (no `--image-tag`)**: After checkout, the script sets `IMAGE_TAG=$(git rev-parse --short HEAD)`.
+- **With `--image-tag latest`**: The script builds from the exact checked-out commit but tags all three app images as `latest`.
+- **Recommended CI practice**: build an additional immutable sibling tag in CI or your image publication step so `latest` stays the runtime tag while each deploy remains traceable to a specific commit.
 
 **Requirements**
 
 - Docker and docker compose on PATH
-- `infra/docker/.env.prod` present and configured
+- `infra/docker/.env.prod` present and configured for production deploys, or `infra/docker/.env.dev` for dev deploys
 - Clean git working tree unless `--force` is used
 
 **Exit codes:** `0` = success; `1` = validation or deployment failure (including after rollback).
 
 ---
 
-## 6. Health checks
+## 6. Health Checks
 
 - **Liveness**: `GET /health/live` → `{ "status": "ok" }`
 - **Readiness**: `GET /health/ready` → `{ "status": "ready", "dependencies": { "postgres": true, "redis": true } }`
@@ -192,12 +686,12 @@ The deploy script waits up to 30s for the API and 20s for the web; if either fai
 Each run writes a timestamped log and container snapshots under the state directory:
 
 ```
-~/.local/state/tw-portfolio/logs/deploy/
+~/.local/state/tw-portfolio/<environment>/logs/deploy/
   deploy_YYYYMMDD_HHMMSS.log              # full deploy stdout+stderr
   deploy_YYYYMMDD_HHMMSS_containers/      # per-container log snapshots
-    twp-prod-api.log
-    twp-prod-web.log
-    twp-prod-postgres.log
+    twp-<environment>-api.log
+    twp-<environment>-web.log
+    twp-<environment>-postgres.log
     ...
 ```
 
@@ -211,50 +705,73 @@ docker logs twp-prod-web --tail 100 -f
 docker logs twp-prod-postgres --tail 50
 docker logs twp-prod-redis --tail 50
 docker logs twp-prod-cloudflared --tail 50
+
+docker logs twp-dev-api --tail 100 -f
+docker logs twp-dev-web --tail 100 -f
+docker logs twp-dev-postgres --tail 50
 ```
+
+### 7.3 Maintenance Checklist
+
+- Rotate `DEPLOY_SSH_KEY`, `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`, and `CLOUDFLARE_TUNNEL_TOKEN` per environment; update the matching GitHub Environment and host env file together.
+- Validate configuration before a manual deploy:
+  ```bash
+  docker compose -f infra/docker/docker-compose.prod.yml --env-file infra/docker/.env.prod config >/dev/null
+  docker compose -f infra/docker/docker-compose.dev.yml --env-file infra/docker/.env.dev config >/dev/null
+  ```
+- Verify the active stack on a host:
+  ```bash
+  docker compose -f infra/docker/docker-compose.prod.yml --env-file infra/docker/.env.prod ps
+  docker compose -f infra/docker/docker-compose.dev.yml --env-file infra/docker/.env.dev ps
+  ```
+- Clean old app images carefully by environment prefix only:
+  ```bash
+  docker images | grep '^twp-prod-'
+  docker images | grep '^twp-dev-'
+  ```
 
 ---
 
 ## 8. Troubleshooting
 
-### 8.1 API requests fail with `net::ERR_NAME_NOT_RESOLVED` (e.g. `/settings`, `/portfolio/holdings`)
+### 8.1 API Requests Fail with `net::ERR_NAME_NOT_RESOLVED` (for example `/settings` or `/portfolio/holdings`)
 
-The browser cannot resolve the API hostname (`twp-api.kzokvdevs.dpdns.org`). This is a **DNS / Cloudflare Tunnel** configuration issue, not an app bug.
+The browser cannot resolve the API hostname. This is a **DNS / Cloudflare Tunnel** configuration issue, not an app bug.
 
 1. **Confirm both tunnel hostnames**  
-   In **Cloudflare Zero Trust** → **Networks** → **Tunnels** → your tunnel → **Public Hostname**:
-   - `twp-web.kzokvdevs.dpdns.org` → `http://twp-prod-web:3000`
-   - `twp-api.kzokvdevs.dpdns.org` → `http://twp-prod-api:4000`  
+   In **Cloudflare Zero Trust** -> **Networks** -> **Tunnels** -> your tunnel -> **Public Hostname**:
+   - `twp-web.example.com` -> `http://twp-prod-web:3000`
+   - `twp-api.example.com` -> `http://twp-prod-api:4000`
    If the API hostname is missing, add it (same tunnel). Cloudflare will create the CNAME for the API subdomain.
 
 2. **Verify DNS from the same network as users**  
    From a machine using the same DNS as the browser (e.g. your laptop):
    ```bash
-   getent hosts twp-api.kzokvdevs.dpdns.org
-   # or: nslookup twp-api.kzokvdevs.dpdns.org
+   getent hosts twp-api.example.com
+   # or: nslookup twp-api.example.com
    ```
    If it does not resolve, fix in step 1 and allow TTL/propagation.
 
 3. **Ensure the zone is on Cloudflare**  
-   The domain (e.g. `kzokvdevs.dpdns.org`) must be in Cloudflare so the tunnel can create CNAMEs. If DNS for that zone is elsewhere, create a CNAME for `twp-api.kzokvdevs.dpdns.org` pointing to your tunnel’s address (e.g. `<tunnel-id>.cfargotunnel.com`), as shown in the tunnel’s Public Hostname list.
+   The domain hosting `twp-api.example.com` must be in Cloudflare so the tunnel can create CNAMEs. If DNS for that zone is elsewhere, create a CNAME for `twp-api.example.com` pointing to your tunnel’s address (for example `<tunnel-id>.cfargotunnel.com`), as shown in the tunnel’s Public Hostname list.
 
 After fixing DNS, no redeploy is needed; the web app already uses the correct API URL.
 
-### 8.2 API requests show Response status 0 (CORS)
+### 8.2 API Requests Show Response Status 0 (CORS)
 
-If the request to `twp-api...` shows **status 0** in DevTools and the page origin is `twp-web...`, the browser is likely blocking the response due to CORS (missing or wrong `Access-Control-Allow-Origin`).
+If the request to the API hostname shows **status 0** in DevTools and the page origin is the web hostname, the browser is likely blocking the response due to CORS (missing or wrong `Access-Control-Allow-Origin`).
 
 1. **Check the API’s allowed origin** on the server:
    ```bash
    docker exec twp-prod-api printenv ALLOWED_ORIGINS
    ```
-   It must be exactly `https://twp-web.kzokvdevs.dpdns.org` (no trailing slash). It is set from `PUBLIC_DOMAIN_WEB` in `docker-compose.prod.yml` via `ALLOWED_ORIGINS: https://${PUBLIC_DOMAIN_WEB:-...}`.
+   It must be exactly `https://twp-web.example.com` (no trailing slash). It is set from `PUBLIC_DOMAIN_WEB` in `docker-compose.prod.yml`.
 
-2. **Ensure `.env.prod` has** `PUBLIC_DOMAIN_WEB=twp-web.kzokvdevs.dpdns.org` (no trailing slash), then redeploy so the API container gets the correct env.
+2. **Ensure `.env.prod` has** `PUBLIC_DOMAIN_WEB=twp-web.example.com` (no trailing slash), then redeploy so the API container gets the correct env.
 
 3. **Browser console**: Look for a CORS error (e.g. “blocked by CORS policy: No 'Access-Control-Allow-Origin' header”).
 
-4. **Quick test**: Open `https://twp-api.kzokvdevs.dpdns.org/health/live` in a new tab. If it returns JSON, the API and DNS are fine and the issue is CORS for the web origin.
+4. **Quick test**: Open `https://twp-api.example.com/health/live` in a new tab. If it returns JSON, the API and DNS are fine and the issue is CORS for the web origin.
 
 ---
 
@@ -271,7 +788,8 @@ To redeploy a known-good commit:
 ```bash
 cd ~/tw-portfolio
 git log --oneline -5          # find the commit to roll back to
-bash infra/scripts/deploy.sh <commit-sha>
+bash infra/scripts/deploy.sh --environment production <commit-sha>
+bash infra/scripts/deploy.sh --environment dev --branch dev <commit-sha>
 ```
 
 The script will checkout that SHA (if reachable from the current branch), use its short SHA as the image tag, and run the full deploy flow. To use a specific tag string for the images instead of the short SHA, pass `--image-tag <tag>` (the repo is still checked out and built from the current ref; only the tag label changes).
@@ -283,7 +801,8 @@ The script will checkout that SHA (if reachable from the current branch), use it
 Migrations are **not** automatically reversed by a code rollback. The deploy script takes a Postgres backup before every migration and restores it during automatic rollback. If automatic restore fails, restore manually from the state backup directory:
 
 ```bash
-gunzip -c ~/.local/state/tw-portfolio/backups/<latest>.sql.gz | docker exec -i twp-prod-postgres psql -U twp -d tw_portfolio
+gunzip -c ~/.local/state/tw-portfolio/production/backups/<latest>.sql.gz | docker exec -i twp-prod-postgres psql -U twp -d tw_portfolio
+gunzip -c ~/.local/state/tw-portfolio/dev/backups/<latest>.sql.gz | docker exec -i twp-dev-postgres psql -U twp -d tw_portfolio
 ```
 
 Replace `<latest>` with the appropriate backup filename (e.g. the pre-migration backup).
@@ -299,15 +818,17 @@ Migrations run in a dedicated image (`db/Dockerfile.migrate`) that bakes SQL fil
 **Script (recommended):**
 
 ```bash
-bash infra/scripts/backup-postgres.sh
+bash infra/scripts/backup-postgres.sh --environment production
+bash infra/scripts/backup-postgres.sh --environment dev
 ```
 
-Backups are written to `~/.local/state/tw-portfolio/backups/` (or `BACKUP_DIR` / `TWP_STATE_DIR` if set). Old backups are pruned per `RETAIN_DAYS` (default 30).
+Backups are written to `~/.local/state/tw-portfolio/<environment>/backups/` (or `BACKUP_DIR` / `TWP_STATE_DIR` if set). Old backups are pruned per `RETAIN_DAYS` (default 30).
 
 **Manual backup:**
 
 ```bash
-docker exec twp-prod-postgres pg_dump -U twp tw_portfolio | gzip > ~/.local/state/tw-portfolio/backups/tw_portfolio_$(date +%Y%m%d_%H%M%S).sql.gz
+docker exec twp-prod-postgres pg_dump -U twp tw_portfolio | gzip > ~/.local/state/tw-portfolio/production/backups/tw_portfolio_$(date +%Y%m%d_%H%M%S).sql.gz
+docker exec twp-dev-postgres pg_dump -U twp tw_portfolio | gzip > ~/.local/state/tw-portfolio/dev/backups/tw_portfolio_$(date +%Y%m%d_%H%M%S).sql.gz
 ```
 
 ---
@@ -321,7 +842,7 @@ Container recreation causes about **10–30 seconds** of downtime while `docker 
 ## 12. Security assumptions
 
 - **External TLS**: All public traffic is encrypted via the Cloudflare Tunnel. TLS terminates at Cloudflare’s edge; the tunnel uses an authenticated, encrypted connection to the `cloudflared` container.
-- **Internal traffic**: Communication between containers on the `twp-prod-net` Docker bridge (web → api, api → postgres, api → redis) uses plaintext. This is acceptable because the bridge is isolated to the Docker host and not routable from the LAN.
+- **Internal traffic**: Communication between containers on the `twp-prod-net` and `twp-dev-net` Docker bridges (web -> api, api -> postgres, api -> redis) uses plaintext. This is acceptable because each bridge is isolated to the Docker host and not routable from the LAN.
 - **Postgres**: No `sslmode`; relies on Docker network isolation.
 - **Redis**: Password-authenticated, no TLS; relies on Docker network isolation.
 - If the deployment moves to a multi-host setup, internal TLS must be introduced.

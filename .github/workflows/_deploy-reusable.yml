@@ -1,0 +1,157 @@
+name: Deploy Shared via Cloudflare WARP
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      deploy_branch:
+        required: true
+        type: string
+      deploy_image_tag:
+        required: false
+        type: string
+        default: latest
+      deploy_sha:
+        required: true
+        type: string
+    secrets:
+      CF_ACCESS_CLIENT_ID:
+        required: true
+      CF_ACCESS_CLIENT_SECRET:
+        required: true
+      CF_TEAM_NAME:
+        required: true
+      DEPLOY_HOST:
+        required: true
+      DEPLOY_KNOWN_HOSTS:
+        required: true
+      DEPLOY_PATH:
+        required: true
+      DEPLOY_SSH_KEY:
+        required: true
+      DEPLOY_USER:
+        required: true
+
+permissions: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    env:
+      DEPLOY_BRANCH: ${{ inputs.deploy_branch }}
+      DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+      DEPLOY_IMAGE_TAG: ${{ inputs.deploy_image_tag }}
+      DEPLOY_SHA: ${{ inputs.deploy_sha }}
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+    steps:
+      - name: Install WARP
+        run: |
+          set -euo pipefail
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y cloudflare-warp
+
+      - name: Configure WARP MDM
+        run: |
+          set -euo pipefail
+          sudo install -d -m 700 /var/lib/cloudflare-warp
+          sudo install -m 600 /dev/null /var/lib/cloudflare-warp/mdm.xml
+          cat <<EOF | sudo tee /var/lib/cloudflare-warp/mdm.xml >/dev/null
+          <dict>
+              <key>auth_client_id</key>
+              <string>${{ secrets.CF_ACCESS_CLIENT_ID }}</string>
+              <key>auth_client_secret</key>
+              <string>${{ secrets.CF_ACCESS_CLIENT_SECRET }}</string>
+              <key>auto_connect</key>
+              <integer>1</integer>
+              <key>onboarding</key>
+              <false/>
+              <key>organization</key>
+              <string>${{ secrets.CF_TEAM_NAME }}</string>
+              <key>service_mode</key>
+              <string>warp</string>
+          </dict>
+          EOF
+          sudo chmod 600 /var/lib/cloudflare-warp/mdm.xml
+
+      - name: Start WARP daemon
+        run: |
+          set -euo pipefail
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now warp-svc
+          sleep 10
+
+      - name: Register and connect WARP
+        run: |
+          set -euo pipefail
+          warp-cli --accept-tos registration new
+          warp-cli --accept-tos connect
+          sleep 10
+
+      - name: Install SSH materials
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          umask 077
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Verify SSH connectivity and remote files
+        run: |
+          set -euo pipefail
+          case "$DEPLOY_ENVIRONMENT" in
+            production)
+              remote_env_file="$DEPLOY_PATH/infra/docker/.env.prod"
+              remote_compose_file="$DEPLOY_PATH/infra/docker/docker-compose.prod.yml"
+              ;;
+            dev)
+              remote_env_file="$DEPLOY_PATH/infra/docker/.env.dev"
+              remote_compose_file="$DEPLOY_PATH/infra/docker/docker-compose.dev.yml"
+              ;;
+            *)
+              echo "ERROR: Unsupported deploy environment: $DEPLOY_ENVIRONMENT" >&2
+              exit 1
+              ;;
+          esac
+          ssh -i ~/.ssh/id_ed25519 \
+            -o BatchMode=yes \
+            -o ConnectTimeout=30 \
+            -o IdentitiesOnly=yes \
+            -o LogLevel=ERROR \
+            -o StrictHostKeyChecking=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "test -f '$DEPLOY_PATH/infra/scripts/deploy.sh' && test -f '$remote_compose_file' && test -f '$remote_env_file' && docker compose version >/dev/null"
+
+      - name: Run remote deploy
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_ed25519 \
+            -o BatchMode=yes \
+            -o ConnectTimeout=30 \
+            -o IdentitiesOnly=yes \
+            -o LogLevel=ERROR \
+            -o StrictHostKeyChecking=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash '$DEPLOY_PATH/infra/scripts/deploy.sh' --environment '$DEPLOY_ENVIRONMENT' --branch '$DEPLOY_BRANCH' -t '$DEPLOY_IMAGE_TAG' '$DEPLOY_SHA'"
+
+      - name: Collect failure diagnostics
+        if: failure()
+        run: |
+          set +e
+          warp-cli --accept-tos status || true
+          sudo systemctl status warp-svc --no-pager || true
+
+      - name: Cleanup credentials
+        if: always()
+        run: |
+          rm -f ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          sudo rm -f /var/lib/cloudflare-warp/mdm.xml

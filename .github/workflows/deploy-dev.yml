@@ -1,0 +1,20 @@
+name: Deploy Dev via Cloudflare WARP
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/_deploy-reusable.yml
+    with:
+      environment: dev
+      deploy_branch: ${{ github.ref_name }}
+      deploy_image_tag: latest
+      deploy_sha: ${{ github.sha }}
+    secrets: inherit

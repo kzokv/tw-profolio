@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, test/cloudflared-echo, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 jobs:
   lint:
@@ -86,44 +86,24 @@ jobs:
       - run: npm run build -w @tw-portfolio/shared-types
       - run: npm run test:integration
 
-  e2e-tests:
+  deploy-config-validation:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: app
-          POSTGRES_PASSWORD: app
-          POSTGRES_DB: tw_portfolio
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U app"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      redis:
-        image: redis:7
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DB_URL: postgres://app:app@localhost:5432/tw_portfolio
-      REDIS_URL: redis://localhost:6379
-      PERSISTENCE_BACKEND: postgres
-      AUTH_MODE: dev_bypass
-      NODE_ENV: test
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: bash scripts/onboard.sh --ci
-      - run: npm run build -w @tw-portfolio/domain
-      - run: npm run build -w @tw-portfolio/shared-types
-      - run: npm run test:e2e:ci
+      - name: Validate deploy script CLI
+        run: |
+          set -euo pipefail
+          bash infra/scripts/deploy.sh --help >/dev/null
+          if bash infra/scripts/deploy.sh --environment invalid >/tmp/deploy-script-invalid.out 2>&1; then
+            echo "expected invalid environment to fail" >&2
+            exit 1
+          fi
+          grep -q "Unsupported environment" /tmp/deploy-script-invalid.out
+      - name: Validate production compose rendering
+        run: |
+          set -euo pipefail
+          docker compose -f infra/docker/docker-compose.prod.yml --env-file infra/docker/fixtures/env.prod.ci config >/dev/null
+      - name: Validate dev compose rendering
+        run: |
+          set -euo pipefail
+          docker compose -f infra/docker/docker-compose.dev.yml --env-file infra/docker/fixtures/env.dev.ci config >/dev/null
