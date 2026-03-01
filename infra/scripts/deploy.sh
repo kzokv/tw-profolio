@@ -4,12 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT_PATH="${0##*/}"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-COMPOSE_FILE="$REPO_ROOT/infra/docker/docker-compose.prod.yml"
-ENV_FILE="$REPO_ROOT/infra/docker/.env.prod"
 BACKUP_SCRIPT="$SCRIPT_DIR/backup-postgres.sh"
 PREVIOUS_BRANCH=""
 PREVIOUS_SHA=""
 
+ENVIRONMENT="production"
 BRANCH_NAME="main"
 BRANCH_REMOTE="origin"
 DEPLOY_SHA=""
@@ -19,17 +18,27 @@ SELECT_BRANCH=false
 FORCE=false
 
 DEPLOY_TS="$(date +%Y%m%d_%H%M%S)"
-STATE_BASE_DIR=""
-DEPLOY_LOG_DIR=""
-BACKUP_DIR=""
-LEGACY_BACKUP_DIR="${LEGACY_BACKUP_DIR:-/data/backups/tw-portfolio}"
-DEPLOY_LOG_FILE=""
-CONTAINER_LOG_DIR=""
 DEPLOY_START_EPOCH=""
 PHASE_START_EPOCH=""
 IMAGE_TAG=""
 
-# ── Logging ──────────────────────────────────────────────────────
+COMPOSE_FILE=""
+COMPOSE_PROJECT=""
+ENV_FILE=""
+STACK_PREFIX=""
+POSTGRES_CONTAINER=""
+REDIS_CONTAINER=""
+MIGRATE_SERVICE=""
+API_CONTAINER=""
+WEB_CONTAINER=""
+CLOUDFLARED_CONTAINER=""
+CONTAINER_NAMES=""
+STATE_BASE_DIR=""
+BACKUP_DIR=""
+DEPLOY_LOG_DIR=""
+LEGACY_BACKUP_DIR="${LEGACY_BACKUP_DIR:-/data/backups/tw-portfolio}"
+DEPLOY_LOG_FILE=""
+CONTAINER_LOG_DIR=""
 
 log() {
   echo "[$(date '+%H:%M:%S')] $*"
@@ -37,7 +46,7 @@ log() {
 
 log_phase() {
   echo ""
-  log "── $* ──────────────────────────────────"
+  log "== $* =="
 }
 
 phase_start() {
@@ -47,68 +56,12 @@ phase_start() {
 
 phase_done() {
   local elapsed=$(( $(date +%s) - PHASE_START_EPOCH ))
-  log "  done (${elapsed}s)"
-}
-
-setup_deploy_log() {
-  if ! mkdir -p "$DEPLOY_LOG_DIR"; then
-    echo "ERROR: Cannot create DEPLOY_LOG_DIR at '$DEPLOY_LOG_DIR'" >&2
-    echo "Set DEPLOY_LOG_DIR or TWP_STATE_DIR to a writable path." >&2
-    exit 1
-  fi
-  DEPLOY_LOG_FILE="$DEPLOY_LOG_DIR/deploy_${DEPLOY_TS}.log"
-  CONTAINER_LOG_DIR="$DEPLOY_LOG_DIR/deploy_${DEPLOY_TS}_containers"
-  exec > >(tee -a "$DEPLOY_LOG_FILE") 2>&1
-  log "Deploy log: $DEPLOY_LOG_FILE"
-  find "$DEPLOY_LOG_DIR" -maxdepth 1 -name "deploy_*.log" -mtime +30 -delete 2>/dev/null || true
-  find "$DEPLOY_LOG_DIR" -maxdepth 1 -name "deploy_*_containers" -type d -mtime +30 -exec rm -rf {} + 2>/dev/null || true
-}
-
-collect_container_logs() {
-  mkdir -p "$CONTAINER_LOG_DIR"
-  local containers="twp-prod-api twp-prod-web twp-prod-postgres twp-prod-redis twp-prod-cloudflared"
-  for c in $containers; do
-    if docker ps -a --format '{{.Names}}' | grep -q "^${c}$"; then
-      docker logs "$c" --tail 200 > "$CONTAINER_LOG_DIR/${c}.log" 2>&1 || true
-    fi
-  done
-  log "Container logs: $CONTAINER_LOG_DIR/"
-}
-
-collect_compose_failure_diagnostics() {
-  local reason="$1"
-  local diag_dir="$DEPLOY_LOG_DIR/deploy_${DEPLOY_TS}_compose_failure"
-  local services="twp-prod-postgres twp-prod-redis twp-prod-migrate twp-prod-api twp-prod-web twp-prod-cloudflared"
-
-  mkdir -p "$diag_dir"
-  log "Collecting compose diagnostics (${reason})..."
-
-  dc ps > "$diag_dir/compose_ps.txt" 2>&1 || true
-  dc ps -a > "$diag_dir/compose_ps_a.txt" 2>&1 || true
-
-  for svc in $services; do
-    if ! docker ps -a --format '{{.Names}}' | grep -q "^${svc}$"; then
-      continue
-    fi
-
-    docker inspect "$svc" > "$diag_dir/${svc}.inspect.json" 2>&1 || true
-    state="$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}} {{.State.ExitCode}} {{.State.Error}}' "$svc" 2>/dev/null || true)"
-    echo "$state" > "$diag_dir/${svc}.state.txt"
-
-    # Persist higher-volume logs when service is not healthy/running.
-    if [[ "$state" != running* ]] || [[ "$state" == *"unhealthy"* ]] || [[ "$state" == exited* ]]; then
-      docker logs "$svc" --tail 500 > "$diag_dir/${svc}.log" 2>&1 || true
-    fi
-  done
-
-  log "Compose diagnostics: $diag_dir/"
+  log "done (${elapsed}s)"
 }
 
 dc() {
-  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
+  docker compose --project-name "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
 }
-
-# ── Help / args ──────────────────────────────────────────────────
 
 print_help() {
   cat <<EOF
@@ -118,17 +71,18 @@ Description:
 Usage: ${SCRIPT_PATH} [OPTIONS] [DEPLOY_SHA]
 
 Options:
-  -h, --help              Show this help message and exit (optional)
-  -b, --branch BRANCH     Deploy from this branch (optional, default: main)
-  -s, --select-branch     Select deploy branch from numbered local/remote list (optional)
-  -t, --image-tag TAG     Use this tag for all app images (twp-prod-api, twp-prod-web, twp-prod-migrate). If omitted, tag is derived from the deployed commit SHA.
-  -f, --force             Allow deploy with uncommitted changes (optional)
-  DEPLOY_SHA              CI-tested commit SHA to deploy from the target branch (optional)
+  -h, --help                   Show this help message and exit (optional)
+  -e, --environment ENV        Deploy environment: production or dev (optional, default: production)
+  -b, --branch BRANCH          Deploy from this branch (optional, default: main)
+  -s, --select-branch          Select deploy branch from numbered local/remote list (optional)
+  -t, --image-tag TAG          Use this tag for all app images in the selected environment (optional, default: short deployed SHA)
+  -f, --force                  Allow deploy with uncommitted changes (optional)
+  DEPLOY_SHA                   CI-tested commit SHA to deploy from the target branch (optional)
 
 Requirements:
   - Clean git working tree in the tw-portfolio repo (unless --force is used)
   - Docker and docker compose available on PATH
-  - Configured env file at infra/docker/.env.prod
+  - Configured env file for the selected environment
 
 Exit codes:
   0  Successful deployment
@@ -149,6 +103,20 @@ parse_args() {
       -h|--help)
         print_help
         exit 0
+        ;;
+      -e|--environment)
+        if [ "${2-}" = "" ] || [[ "$2" == -* ]]; then
+          error_and_help "--environment requires a value"
+        fi
+        ENVIRONMENT="$2"
+        shift 2
+        ;;
+      --environment=*)
+        ENVIRONMENT="${1#*=}"
+        if [ -z "$ENVIRONMENT" ]; then
+          error_and_help "--environment requires a value"
+        fi
+        shift 1
         ;;
       -b|--branch)
         if [ "${2-}" = "" ] || [[ "$2" == -* ]]; then
@@ -203,7 +171,39 @@ parse_args() {
   done
 }
 
-# ── Branch selection ─────────────────────────────────────────────
+configure_environment() {
+  case "$ENVIRONMENT" in
+    production)
+      COMPOSE_FILE="$REPO_ROOT/infra/docker/docker-compose.prod.yml"
+      ENV_FILE="$REPO_ROOT/infra/docker/.env.prod"
+      STACK_PREFIX="twp-prod"
+      COMPOSE_PROJECT="twp-prod"
+      POSTGRES_CONTAINER="twp-prod-postgres"
+      REDIS_CONTAINER="twp-prod-redis"
+      MIGRATE_SERVICE="twp-prod-migrate"
+      API_CONTAINER="twp-prod-api"
+      WEB_CONTAINER="twp-prod-web"
+      CLOUDFLARED_CONTAINER="twp-prod-cloudflared"
+      ;;
+    dev)
+      COMPOSE_FILE="$REPO_ROOT/infra/docker/docker-compose.dev.yml"
+      ENV_FILE="$REPO_ROOT/infra/docker/.env.dev"
+      STACK_PREFIX="twp-dev"
+      COMPOSE_PROJECT="twp-dev"
+      POSTGRES_CONTAINER="twp-dev-postgres"
+      REDIS_CONTAINER="twp-dev-redis"
+      MIGRATE_SERVICE="twp-dev-migrate"
+      API_CONTAINER="twp-dev-api"
+      WEB_CONTAINER="twp-dev-web"
+      CLOUDFLARED_CONTAINER="twp-dev-cloudflared"
+      ;;
+    *)
+      error_and_help "Unsupported environment: $ENVIRONMENT"
+      ;;
+  esac
+
+  CONTAINER_NAMES="$API_CONTAINER $WEB_CONTAINER $POSTGRES_CONTAINER $REDIS_CONTAINER $CLOUDFLARED_CONTAINER"
+}
 
 select_deploy_branch() {
   if [ ! -t 0 ]; then
@@ -265,7 +265,95 @@ select_deploy_branch() {
   fi
 }
 
-# ── Git checkout ─────────────────────────────────────────────────
+setup_state_dirs() {
+  local default_home="${HOME:-$REPO_ROOT}"
+  local configured_root="${TWP_STATE_DIR:-$default_home/.local/state/tw-portfolio/$ENVIRONMENT}"
+  STATE_BASE_DIR="$configured_root"
+  BACKUP_DIR="${BACKUP_DIR:-$STATE_BASE_DIR/backups}"
+  DEPLOY_LOG_DIR="${DEPLOY_LOG_DIR:-$STATE_BASE_DIR/logs/deploy}"
+  export TWP_STATE_DIR="$STATE_BASE_DIR" BACKUP_DIR DEPLOY_LOG_DIR
+}
+
+setup_deploy_log() {
+  if ! mkdir -p "$DEPLOY_LOG_DIR"; then
+    echo "ERROR: Cannot create DEPLOY_LOG_DIR at '$DEPLOY_LOG_DIR'" >&2
+    echo "Set DEPLOY_LOG_DIR or TWP_STATE_DIR to a writable path." >&2
+    exit 1
+  fi
+  DEPLOY_LOG_FILE="$DEPLOY_LOG_DIR/deploy_${DEPLOY_TS}.log"
+  CONTAINER_LOG_DIR="$DEPLOY_LOG_DIR/deploy_${DEPLOY_TS}_containers"
+  exec > >(tee -a "$DEPLOY_LOG_FILE") 2>&1
+  log "Deploy log: $DEPLOY_LOG_FILE"
+  find "$DEPLOY_LOG_DIR" -maxdepth 1 -name "deploy_*.log" -mtime +30 -delete 2>/dev/null || true
+  find "$DEPLOY_LOG_DIR" -maxdepth 1 -name "deploy_*_containers" -type d -mtime +30 -exec rm -rf {} + 2>/dev/null || true
+}
+
+require_command() {
+  local cmd="$1"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "ERROR: Required command not found on PATH: $cmd" >&2
+    exit 1
+  fi
+}
+
+validate_env_file_keys() {
+  local required_keys=(
+    POSTGRES_PASSWORD
+    REDIS_PASSWORD
+    CLOUDFLARE_TUNNEL_TOKEN
+    PUBLIC_DOMAIN_WEB
+    PUBLIC_DOMAIN_API
+    AUTH_MODE
+    PERSISTENCE_BACKEND
+  )
+  local key value
+
+  for key in "${required_keys[@]}"; do
+    value="${!key-}"
+    if [ -z "$value" ]; then
+      echo "ERROR: Required env var '$key' is missing in $ENV_FILE" >&2
+      exit 1
+    fi
+  done
+
+  if [ "${AUTH_MODE:-}" = "oauth" ] && [ -z "${AUTH_USER_ID:-}" ]; then
+    echo "ERROR: AUTH_USER_ID is required in $ENV_FILE when AUTH_MODE=oauth" >&2
+    exit 1
+  fi
+}
+
+validate_preflight() {
+  require_command docker
+  require_command git
+
+  if [ ! -f "$COMPOSE_FILE" ]; then
+    echo "ERROR: Compose file not found: $COMPOSE_FILE" >&2
+    exit 1
+  fi
+
+  if [ ! -f "$ENV_FILE" ]; then
+    echo "ERROR: Env file not found: $ENV_FILE" >&2
+    exit 1
+  fi
+
+  if ! docker compose version >/dev/null 2>&1; then
+    echo "ERROR: docker compose is not available on PATH" >&2
+    exit 1
+  fi
+
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+
+  validate_env_file_keys
+  setup_state_dirs
+
+  if ! docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" config >/dev/null; then
+    echo "ERROR: docker compose config validation failed for $COMPOSE_FILE" >&2
+    exit 1
+  fi
+}
 
 checkout_deploy_ref() {
   local branch="$1"
@@ -298,7 +386,62 @@ checkout_deploy_ref() {
   fi
 }
 
-# ── Rollback ─────────────────────────────────────────────────────
+collect_container_logs() {
+  mkdir -p "$CONTAINER_LOG_DIR"
+  local c
+  for c in $CONTAINER_NAMES; do
+    if docker ps -a --format '{{.Names}}' | grep -q "^${c}$"; then
+      docker logs "$c" --tail 200 > "$CONTAINER_LOG_DIR/${c}.log" 2>&1 || true
+    fi
+  done
+  log "Container logs: $CONTAINER_LOG_DIR/"
+}
+
+collect_compose_failure_diagnostics() {
+  local reason="$1"
+  local diag_dir="$DEPLOY_LOG_DIR/deploy_${DEPLOY_TS}_compose_failure"
+  local svc
+
+  mkdir -p "$diag_dir"
+  log "Collecting compose diagnostics (${reason})..."
+
+  dc ps > "$diag_dir/compose_ps.txt" 2>&1 || true
+  dc ps -a > "$diag_dir/compose_ps_a.txt" 2>&1 || true
+
+  for svc in $POSTGRES_CONTAINER $REDIS_CONTAINER $MIGRATE_SERVICE $API_CONTAINER $WEB_CONTAINER $CLOUDFLARED_CONTAINER; do
+    if ! docker ps -a --format '{{.Names}}' | grep -q "^${svc}$"; then
+      continue
+    fi
+
+    docker inspect "$svc" > "$diag_dir/${svc}.inspect.json" 2>&1 || true
+    state="$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}} {{.State.ExitCode}} {{.State.Error}}' "$svc" 2>/dev/null || true)"
+    echo "$state" > "$diag_dir/${svc}.state.txt"
+
+    if [[ "$state" != running* ]] || [[ "$state" == *"unhealthy"* ]] || [[ "$state" == exited* ]]; then
+      docker logs "$svc" --tail 500 > "$diag_dir/${svc}.log" 2>&1 || true
+    fi
+  done
+
+  log "Compose diagnostics: $diag_dir/"
+}
+
+restore_database_if_possible() {
+  local latest_backup=""
+  if docker ps --format '{{.Names}}' | grep -q "^${POSTGRES_CONTAINER}$"; then
+    latest_backup="$(ls -t "${BACKUP_DIR}"/*.sql.gz 2>/dev/null | head -1 || true)"
+    if [ -z "$latest_backup" ] && [ "$ENVIRONMENT" = "production" ]; then
+      latest_backup="$(ls -t "${LEGACY_BACKUP_DIR}"/*.sql.gz 2>/dev/null | head -1 || true)"
+    fi
+
+    if [ -n "$latest_backup" ]; then
+      log "Restoring database from $latest_backup..."
+      gunzip -c "$latest_backup" | docker exec -i "$POSTGRES_CONTAINER" psql -U "${POSTGRES_USER:-twp}" -d "${POSTGRES_DB:-tw_portfolio}" 2>/dev/null || \
+        log "WARNING: DB restore failed; manual restore may be needed"
+    else
+      log "WARNING: No backup found for DB restore; schema may be inconsistent"
+    fi
+  fi
+}
 
 rollback() {
   log_phase "ROLLBACK: restoring previous state (branch: ${PREVIOUS_BRANCH:-detached}, sha: ${PREVIOUS_SHA:-unknown})"
@@ -310,49 +453,48 @@ rollback() {
   git reset --hard "$PREVIOUS_SHA"
 
   dc --profile migrate build
-  if docker ps --format '{{.Names}}' | grep -q '^twp-prod-postgres$'; then
-    LATEST_BACKUP="$(ls -t "${BACKUP_DIR}"/*.sql.gz 2>/dev/null | head -1)"
-    if [ -z "$LATEST_BACKUP" ]; then
-      LATEST_BACKUP="$(ls -t "${LEGACY_BACKUP_DIR}"/*.sql.gz 2>/dev/null | head -1)"
-    fi
-    if [ -n "$LATEST_BACKUP" ]; then
-      log "Restoring database from $LATEST_BACKUP..."
-      gunzip -c "$LATEST_BACKUP" | docker exec -i twp-prod-postgres psql -U "${POSTGRES_USER:-twp}" -d "${POSTGRES_DB:-tw_portfolio}" 2>/dev/null \
-        || log "WARNING: DB restore failed — manual restore may be needed"
-    else
-      log "WARNING: No backup found for DB restore — schema may be inconsistent"
-    fi
-  fi
-
+  restore_database_if_possible
   dc up -d --remove-orphans
+
   set -e
 }
 
-# ── Main ─────────────────────────────────────────────────────────
+wait_for_healthcheck() {
+  local container="$1"
+  local url="$2"
+  local seconds="$3"
+  local probe="$4"
+  local i
+
+  log "Waiting for ${container} health (up to ${seconds}s)..."
+  for i in $(seq 1 "$seconds"); do
+    if docker exec "$container" sh -lc "$probe '$url'" >/dev/null 2>&1; then
+      log "  healthy after ${i}s"
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+cleanup_old_images() {
+  docker images --format '{{.Repository}}:{{.Tag}}' | grep "^${STACK_PREFIX}-" | grep -v ":${IMAGE_TAG}$" | xargs -r docker rmi >/dev/null 2>&1 || true
+}
 
 parse_args "$@"
-
-if [ ! -f "$ENV_FILE" ]; then
-  echo "ERROR: $ENV_FILE not found. Copy .env.prod.example and configure it." >&2
-  exit 1
-fi
-
-set -a; source "$ENV_FILE"; set +a
-
-DEFAULT_HOME="${HOME:-$REPO_ROOT}"
-STATE_BASE_DIR="${TWP_STATE_DIR:-$DEFAULT_HOME/.local/state/tw-portfolio}"
-DEPLOY_LOG_DIR="${DEPLOY_LOG_DIR:-$STATE_BASE_DIR/logs/deploy}"
-BACKUP_DIR="${BACKUP_DIR:-$STATE_BASE_DIR/backups}"
-export DEPLOY_LOG_DIR BACKUP_DIR
+configure_environment
 
 cd "$REPO_ROOT"
+
 if [ "$SELECT_BRANCH" = true ] && [ "$BRANCH_SPECIFIED" = true ]; then
   error_and_help "Use either --branch or --select-branch, not both"
 fi
+
 if [ "$FORCE" != true ] && [ -n "$(git status --porcelain)" ]; then
   error_and_help "Working tree is not clean; commit, stash, or rerun with --force to proceed (uncommitted changes may be lost)"
 fi
 
+validate_preflight
 setup_deploy_log
 DEPLOY_START_EPOCH=$(date +%s)
 
@@ -361,12 +503,11 @@ if [ "$SELECT_BRANCH" = true ]; then
 fi
 
 log "Deploy started by $(whoami)@$(hostname)"
+log "Environment: $ENVIRONMENT"
 log "Branch: $BRANCH_NAME | Remote: $BRANCH_REMOTE | SHA arg: ${DEPLOY_SHA:-HEAD}"
 
 PREVIOUS_BRANCH="$(git symbolic-ref --quiet --short HEAD || true)"
 PREVIOUS_SHA="$(git rev-parse HEAD)"
-
-# ── Phase 1: Checkout ────────────────────────────────────────────
 
 phase_start "Checkout"
 checkout_deploy_ref "$BRANCH_NAME" "$DEPLOY_SHA" "$BRANCH_REMOTE"
@@ -377,42 +518,33 @@ else
   IMAGE_TAG="$(git rev-parse --short HEAD)"
   log "Deploy SHA: $(git rev-parse HEAD) (tag: $IMAGE_TAG)"
 fi
-export IMAGE_TAG
+export IMAGE_TAG ENV_FILE ENVIRONMENT
 phase_done
-
-# ── Phase 2: Build ───────────────────────────────────────────────
 
 phase_start "Build images (tag: $IMAGE_TAG)"
 dc --profile migrate build
-# Compose image names use IMAGE_TAG, so built images are twp-prod-*:$IMAGE_TAG; do not retag from :latest.
 phase_done
 
-# ── Phase 3: Pre-migration backup ───────────────────────────────
-
 phase_start "Pre-migration database backup"
-if docker ps --format '{{.Names}}' | grep -q '^twp-prod-postgres$'; then
-  bash "$BACKUP_SCRIPT"
+if docker ps --format '{{.Names}}' | grep -q "^${POSTGRES_CONTAINER}$"; then
+  bash "$BACKUP_SCRIPT" --environment "$ENVIRONMENT"
 else
   log "Postgres not running; skipping pre-migration backup"
 fi
 phase_done
 
-# ── Phase 4: Migrate ────────────────────────────────────────────
-
 phase_start "Database migrations"
-if ! dc --profile migrate run --rm twp-prod-migrate; then
-  log "ERROR: Migration failed — triggering rollback"
+if ! dc --profile migrate run --rm "$MIGRATE_SERVICE"; then
+  log "ERROR: Migration failed; triggering rollback"
   collect_container_logs
   rollback
   exit 1
 fi
 phase_done
 
-# ── Phase 5: Deploy ─────────────────────────────────────────────
-
 phase_start "Deploy services"
 if ! dc up -d --remove-orphans; then
-  log "ERROR: docker compose up failed — collecting diagnostics and rolling back"
+  log "ERROR: docker compose up failed; collecting diagnostics and rolling back"
   collect_compose_failure_diagnostics "compose up failed"
   collect_container_logs
   rollback
@@ -420,70 +552,47 @@ if ! dc up -d --remove-orphans; then
 fi
 phase_done
 
-# ── Phase 6: Health checks ──────────────────────────────────────
-
 phase_start "Health checks"
-
 API_HEALTHY=false
-log "Waiting for API health (up to 30s)..."
-for i in $(seq 1 30); do
-  if docker exec twp-prod-api wget -qO- http://127.0.0.1:4000/health/live 2>/dev/null | grep -q '"ok"'; then
-    log "  API healthy after ${i}s"
-    API_HEALTHY=true
-    break
-  fi
-  sleep 1
-done
+WEB_HEALTHY=false
 
+if wait_for_healthcheck "$API_CONTAINER" "http://127.0.0.1:4000/health/live" 30 "wget -qO-"; then
+  if docker exec "$API_CONTAINER" wget -qO- http://127.0.0.1:4000/health/live 2>/dev/null | grep -q '"ok"'; then
+    API_HEALTHY=true
+  fi
+fi
 if [ "$API_HEALTHY" = false ]; then
   log "ERROR: API failed health check after 30s"
-  dc logs --tail 50 twp-prod-api
+  dc logs --tail 50 "$API_CONTAINER" || true
 fi
 
-WEB_HEALTHY=false
-log "Waiting for Web health (up to 20s)..."
-for i in $(seq 1 20); do
-  if docker exec twp-prod-web wget -qO- http://127.0.0.1:3000/ 2>/dev/null | head -c 1 | grep -q '.'; then
-    log "  Web healthy after ${i}s"
-    WEB_HEALTHY=true
-    break
-  fi
-  sleep 1
-done
-
+if wait_for_healthcheck "$WEB_CONTAINER" "http://127.0.0.1:3000/" 20 "wget -qO-"; then
+  WEB_HEALTHY=true
+fi
 if [ "$WEB_HEALTHY" = false ]; then
   log "ERROR: Web failed health check after 20s"
-  dc logs --tail 50 twp-prod-web
+  dc logs --tail 50 "$WEB_CONTAINER" || true
 fi
-
 phase_done
 
-# ── Collect container logs ───────────────────────────────────────
-
 collect_container_logs
-
-# ── Rollback or success ─────────────────────────────────────────
 
 if [ "$API_HEALTHY" = false ] || [ "$WEB_HEALTHY" = false ]; then
   rollback
   exit 1
 fi
 
-# ── Phase 7: Cleanup ────────────────────────────────────────────
-
 phase_start "Cleanup"
-docker images --filter "reference=twp-prod-api" --filter "before=twp-prod-api:$IMAGE_TAG" -q | xargs -r docker rmi 2>/dev/null || true
-docker images --filter "reference=twp-prod-web" --filter "before=twp-prod-web:$IMAGE_TAG" -q | xargs -r docker rmi 2>/dev/null || true
+cleanup_old_images
 phase_done
-
-# ── Summary ──────────────────────────────────────────────────────
 
 DEPLOY_ELAPSED=$(( $(date +%s) - DEPLOY_START_EPOCH ))
 log_phase "Deploy complete"
-log "Tag:      $IMAGE_TAG"
-log "Branch:   $BRANCH_NAME"
-log "SHA:      $(git rev-parse HEAD)"
-log "Duration: ${DEPLOY_ELAPSED}s"
-log "Log:      $DEPLOY_LOG_FILE"
+log "Environment: $ENVIRONMENT"
+log "Tag:         $IMAGE_TAG"
+log "Branch:      $BRANCH_NAME"
+log "SHA:         $(git rev-parse HEAD)"
+log "Duration:    ${DEPLOY_ELAPSED}s"
+log "Log:         $DEPLOY_LOG_FILE"
 echo ""
 dc ps
