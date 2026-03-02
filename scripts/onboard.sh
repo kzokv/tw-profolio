@@ -4,10 +4,11 @@
 #
 # What it does:
 #   1. Installs npm dependencies (npm ci if lockfile present, else npm install).
-#   2. Installs Playwright browsers (npx playwright install).
-#   3. On Linux (interactive only): installs Playwright system deps; prompts for sudo if needed.
-#   4. If .env is missing and .env.example exists, copies .env.example to .env and reminds you to edit.
-#   5. Runs a quick sanity check (lint) to verify setup.
+#   2. Builds workspace libraries (domain, shared-types).
+#   3. Installs Playwright browsers (npx playwright install).
+#   4. On Linux (interactive only): installs Playwright system deps; prompts for sudo if needed.
+#   5. If .env is missing and .env.example exists, copies .env.example to .env and reminds you to edit.
+#   6. Runs a quick sanity check (lint) to verify setup.
 #
 # Idempotent: safe to run multiple times. Re-running will reinstall deps and Playwright;
 # it will not overwrite an existing .env.
@@ -46,10 +47,18 @@ fi
 echo "     Done."
 
 # ---------------------------------------------------------------------------
-# 2. Playwright browsers
+# 2. Build workspace libs (needed for API dev)
 # ---------------------------------------------------------------------------
 echo ""
-echo "[2/5] Installing Playwright browsers..."
+echo "[2/6] Building workspace libs..."
+npm run build -w libs/domain -w libs/shared-types
+echo "     Done."
+
+# ---------------------------------------------------------------------------
+# 3. Playwright browsers
+# ---------------------------------------------------------------------------
+echo ""
+echo "[3/6] Installing Playwright browsers..."
 if [ "$CI_MODE" -eq 1 ]; then
   npx playwright install --with-deps
 else
@@ -58,7 +67,7 @@ fi
 echo "     Done."
 
 # ---------------------------------------------------------------------------
-# 3. Playwright system deps (Linux, interactive only)
+# 4. Playwright system deps (Linux, interactive only)
 # ---------------------------------------------------------------------------
 if [ "$(uname)" = "Linux" ] && [ "$CI_MODE" -eq 0 ]; then
   echo ""
@@ -66,11 +75,11 @@ if [ "$(uname)" = "Linux" ] && [ "$CI_MODE" -eq 0 ]; then
   case "$install_deps" in
     n|N)
       echo ""
-      echo "[3/5] Skipping Playwright system deps (user choice)."
+      echo "[4/6] Skipping Playwright system deps (user choice)."
       ;;
     *)
       echo ""
-      echo "[3/5] Installing Playwright system dependencies (Linux)..."
+      echo "[4/6] Installing Playwright system dependencies (Linux)..."
       if ! npx playwright install-deps 2>/dev/null; then
         echo ""
         read -r -p "playwright install-deps requires sudo. Retry with sudo? [y/N] " ans
@@ -85,7 +94,7 @@ if [ "$(uname)" = "Linux" ] && [ "$CI_MODE" -eq 0 ]; then
   esac
 else
   echo ""
-  echo "[3/5] Skipping Playwright system deps (non-Linux or CI mode)."
+  echo "[4/6] Skipping Playwright system deps (non-Linux or CI mode)."
 fi
 
 if [ "$INSTALL_ONLY" -eq 1 ]; then
@@ -95,11 +104,11 @@ if [ "$INSTALL_ONLY" -eq 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. .env from .env.example if missing (skip in CI)
+# 5. .env from .env.example if missing (skip in CI)
 # ---------------------------------------------------------------------------
 if [ "$CI_MODE" -eq 0 ]; then
   echo ""
-  echo "[4/5] Checking .env..."
+  echo "[5/6] Checking .env..."
   if [ ! -f .env ]; then
     if [ -f .env.example ]; then
       cp .env.example .env
@@ -112,14 +121,14 @@ if [ "$CI_MODE" -eq 0 ]; then
   fi
 else
   echo ""
-  echo "[4/5] Skipping .env (CI mode)."
+  echo "[5/6] Skipping .env (CI mode)."
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Sanity check (lint)
+# 6. Sanity check (lint)
 # ---------------------------------------------------------------------------
 echo ""
-echo "[5/5] Sanity check (lint)..."
+echo "[6/6] Sanity check (lint)..."
 if npm run lint; then
   echo "     Lint passed."
 else
