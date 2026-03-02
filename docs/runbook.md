@@ -27,8 +27,8 @@ Tip: When `next dev` can't bind to `WEB_PORT` (default `3333`), a previous insta
 
 ### Build model
 
-- Workspace libraries (`@tw-portfolio/domain`, `@tw-portfolio/shared-types`) are **not** built during `npm install` / `npm ci`. Builds happen only via explicit commands.
-- Local: `npm run dev` (from repo root) starts the API and web dev servers. **Build libs first** if not yet built: `npm run build -w libs/domain -w libs/shared-types` (or `npm run build` for full build).
+- Workspace libraries (`@tw-portfolio/domain`, `@tw-portfolio/shared-types`) are **not** built during `npm install` / `npm ci`. `npm run onboard` now builds them before handing you the lockfile results, but you still need to run `npm run build -w libs/domain -w libs/shared-types` if you skip onboarding or if you edit those packages after the initial setup.
+- Local: `npm run dev` (from repo root) starts the API and web dev servers. Onboarding already builds the workspace libs and `npm run dev` will rebuild them when the outputs are missing, but rerun `npm run build -w libs/domain -w libs/shared-types` after editing those packages or if you skipped onboarding.
 - CI: `npm ci` then explicit `npm run build -w ...` steps for domain/shared-types/api (and web typecheck).
 - Production: Dockerfiles run `npm ci` then explicit `npm run build -w ...` in the same order; deploy builds images from the checked-out ref.
 
